@@ -1,0 +1,79 @@
+"""Main epilepsy GAT network."""
+
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+
+from epilepsy.models.gat import (
+    DEFAULT_CHANNEL_NAMES,
+    ChannelGating,
+    GatedFusion,
+    PriorMatrixBuilder,
+    SCGAT,
+    TAGAT,
+    compute_plv_batch,
+)
+from epilepsy.models.tcn import FeatureExtractor
+
+
+class EpilepsyGATNet(nn.Module):
+    """TCN + dual graph attention network for EEG epilepsy classification."""
+
+    def __init__(
+        self,
+        channel_names: list[str] | tuple[str, ...] = DEFAULT_CHANNEL_NAMES,
+        fs: int = 256,
+        num_classes: int = 2,
+        feature_dim: int = 128,
+        hid_dim: int = 256,
+    ) -> None:
+        super().__init__()
+        self.C = len(channel_names)
+        self.c_dim = 64
+
+        self.prior_builder = PriorMatrixBuilder(channel_names)
+        self.feat_extractor = FeatureExtractor(self.C, fs, feature_dim)
+        self.tagat = TAGAT(feature_dim, hid_dim, c_dim=self.c_dim)
+        self.scgat = SCGAT(feature_dim, hid_dim, num_classes, c_dim=self.c_dim)
+
+        self.norm_t = nn.LayerNorm(hid_dim)
+        self.norm_s = nn.LayerNorm(hid_dim)
+        self.gate_fuse = GatedFusion(hid_dim)
+        self.ch_gate = ChannelGating(self.C, hid_dim)
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.4),
+            nn.Linear(hid_dim, hid_dim // 2),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(hid_dim // 2, num_classes),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError(f"Expected input shape (B, C, L), got {tuple(x.shape)}")
+        if x.size(1) != self.C:
+            raise ValueError(f"Expected {self.C} channels, got {x.size(1)}")
+
+        a_plv = compute_plv_batch(x)
+        a_prior = self.prior_builder(a_plv)
+
+        feat = self.feat_extractor(x)
+        t_out = self.norm_t(self.tagat(feat))
+        s_out, _ = self.scgat(feat, a_prior)
+        s_out = self.norm_s(s_out)
+
+        fused = self.gate_fuse(t_out.mean(1), s_out.mean(1))
+        ch_gated = self.ch_gate(fused, s_out)
+        fused = fused + ch_gated
+        return self.classifier(fused)

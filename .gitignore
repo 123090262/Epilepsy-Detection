@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+/留一2.ipynb
+
+# Local environment files
+.env
+.env.*
+
+# Data, outputs, and model artifacts
+data/*
+!data/.gitkeep
+runs/*
+!runs/.gitkeep
+checkpoints/*
+!checkpoints/.gitkeep
+*.pth
+*.pt
+*.ckpt
+*.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/

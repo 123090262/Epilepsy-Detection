@@ -1,0 +1,1 @@
+"""Epilepsy EEG classification package."""
