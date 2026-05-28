@@ -30,7 +30,7 @@ docs/                 Experiment notes and project documents
 Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 Check that the config and dataset can be loaded:

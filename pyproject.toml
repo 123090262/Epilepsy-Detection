@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epilepsy-detection"
+version = "0.1.0"
+description = "EEG epilepsy detection project based on CHB-MIT style CSV segments."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
+    "mne",
+    "tqdm",
+    "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
