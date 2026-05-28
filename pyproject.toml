@@ -7,7 +7,7 @@ name = "epilepsy-detection"
 version = "0.1.0"
 description = "EEG epilepsy detection project based on CHB-MIT style CSV segments."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.8"
 dependencies = [
     "torch",
     "numpy",

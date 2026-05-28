@@ -15,6 +15,7 @@ train:
   weight_decay: 0.000001
   val_size: 0.1
   random_state: 42
+  num_workers: 0
 
 model:
   feature_dim: 128

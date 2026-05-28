@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -12,10 +12,10 @@ import yaml
 @dataclass
 class DataConfig:
     data_dir: str
-    sample_rate: int = 256
-    segment_duration: float = 2.0
-    num_channels: int = 22
-    test_patients: tuple[str, ...] = ("chb06", "chb08", "chb10")
+    sample_rate: int
+    segment_duration: float
+    num_channels: int
+    test_patients: tuple[str, ...]
 
     @property
     def segment_length(self) -> int:
@@ -24,26 +24,26 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 32
-    num_epochs: int = 60
-    learning_rate: float = 0.001
-    weight_decay: float = 1e-6
-    val_size: float = 0.1
-    random_state: int = 42
-    num_workers: int = 0
+    batch_size: int
+    num_epochs: int
+    learning_rate: float
+    weight_decay: float
+    val_size: float
+    random_state: int
+    num_workers: int
 
 
 @dataclass
 class ModelConfig:
-    feature_dim: int = 128
-    hidden_dim: int = 256
-    num_classes: int = 2
+    feature_dim: int
+    hidden_dim: int
+    num_classes: int
 
 
 @dataclass
 class OutputConfig:
-    run_dir: str = "runs"
-    checkpoint_dir: str = "checkpoints"
+    run_dir: str
+    checkpoint_dir: str
 
 
 @dataclass
@@ -63,24 +63,43 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def build_section(section_name: str, section_data: Any, config_type: type) -> Any:
+    if not isinstance(section_data, dict):
+        raise ValueError(f"Missing or invalid config section: {section_name}")
+
+    expected = {field.name for field in fields(config_type)}
+    actual = set(section_data)
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+
+    if missing:
+        raise ValueError(
+            f"Missing required config field(s) in {section_name}: {', '.join(missing)}"
+        )
+    if unknown:
+        raise ValueError(
+            f"Unknown config field(s) in {section_name}: {', '.join(unknown)}"
+        )
+
+    return config_type(**section_data)
+
+
 def load_config(path: str | Path) -> ExperimentConfig:
     raw = load_yaml(path)
-    data_raw = raw.get("data", {})
-    train_raw = raw.get("train", {})
-    model_raw = raw.get("model", {})
-    output_raw = raw.get("output", {})
+    expected_sections = {"data", "train", "model", "output"}
+    unknown_sections = sorted(set(raw) - expected_sections)
+    if unknown_sections:
+        raise ValueError(f"Unknown config section(s): {', '.join(unknown_sections)}")
 
-    if "data_dir" not in data_raw:
-        raise ValueError("Missing required config field: data.data_dir")
-
-    data_raw = dict(data_raw)
-    data_raw["test_patients"] = tuple(data_raw.get("test_patients", ()))
+    data_raw = dict(raw.get("data", {}))
+    if "test_patients" in data_raw:
+        data_raw["test_patients"] = tuple(data_raw["test_patients"])
 
     return ExperimentConfig(
-        data=DataConfig(**data_raw),
-        train=TrainConfig(**train_raw),
-        model=ModelConfig(**model_raw),
-        output=OutputConfig(**output_raw),
+        data=build_section("data", data_raw, DataConfig),
+        train=build_section("train", raw.get("train"), TrainConfig),
+        model=build_section("model", raw.get("model"), ModelConfig),
+        output=build_section("output", raw.get("output"), OutputConfig),
     )
 
 
