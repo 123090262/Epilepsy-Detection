@@ -32,14 +32,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def split_train_val(X_train, y_train, val_size: float, random_state: int):
+def split_train_val(indices, labels, val_size: float, random_state: int):
     import numpy as np
     from sklearn.model_selection import train_test_split
 
-    stratify = y_train if len(np.unique(y_train)) == 2 else None
+    stratify = labels if len(np.unique(labels)) == 2 else None
     return train_test_split(
-        X_train,
-        y_train,
+        indices,
         test_size=val_size,
         random_state=random_state,
         stratify=stratify,
@@ -55,11 +54,14 @@ def main() -> None:
     from torch.utils.data import DataLoader
 
     from epilepsy.config import dump_config_copy, load_config
-    from epilepsy.data import make_tensor_dataset, prepare_csv_dataset
+    from epilepsy.data import (
+        ChbmitPoolDataset,
+        EpochBalancedSampler,
+        fit_channel_preprocessor,
+        load_pool_samples,
+    )
     from epilepsy.evaluate import save_summary
     from epilepsy.models import EpilepsyGATNet
-    from epilepsy.plots import plot_confusion_matrix, plot_training_summary
-    from epilepsy.train import evaluate, train_one_epoch
     from epilepsy.utils import append_csv_row, make_run_dir, setup_logger
 
     config = load_config(args.config)
@@ -71,10 +73,17 @@ def main() -> None:
     logger = setup_logger(run_dir / "training.log")
     dump_config_copy(args.config, run_dir / "config.yaml")
 
-    logger.info("Loading CSV dataset...")
-    X, y, patient_ids = prepare_csv_dataset(config.data)
+    logger.info("Loading NPY pool index...")
+    samples = load_pool_samples(config.data)
+    y = np.asarray([sample.label for sample in samples], dtype=np.int64)
+    patient_ids = np.asarray([sample.patient for sample in samples])
     unique_patients = np.unique(patient_ids)
-    logger.info("Generated %d segments with shape %s", len(X), X.shape[1:])
+    logger.info(
+        "Indexed %d segments with shape (%d, %d)",
+        len(samples),
+        config.data.num_channels,
+        config.data.segment_length,
+    )
     logger.info("Label counts: normal=%d seizure=%d", int(np.sum(y == 0)), int(np.sum(y == 1)))
     logger.info("Patients: %s", ", ".join(unique_patients.tolist()))
 
@@ -89,6 +98,9 @@ def main() -> None:
         logger.info("Dry run finished. No training was started.")
         return
 
+    from epilepsy.plots import plot_confusion_matrix, plot_training_summary
+    from epilepsy.train import evaluate, train_one_epoch
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Using device: %s", device)
 
@@ -97,41 +109,54 @@ def main() -> None:
     for fold, test_pid in enumerate(config.data.test_patients, start=1):
         logger.info("===== Fold %d/%d | Test Patient = %s =====", fold, len(config.data.test_patients), test_pid)
 
-        train_idx = patient_ids != test_pid
-        test_idx = patient_ids == test_pid
-        X_train, y_train = X[train_idx], y[train_idx]
-        X_test, y_test = X[test_idx], y[test_idx]
-
-        X_train_sub, X_val, y_train_sub, y_val = split_train_val(
-            X_train,
-            y_train,
+        train_indices = np.flatnonzero(patient_ids != test_pid)
+        test_indices = np.flatnonzero(patient_ids == test_pid)
+        train_sub_indices, val_indices = split_train_val(
+            train_indices,
+            y[train_indices],
             val_size=config.train.val_size,
             random_state=config.train.random_state,
         )
+        train_stats_dataset = ChbmitPoolDataset(samples, train_sub_indices)
+        preprocessor = fit_channel_preprocessor(
+            train_stats_dataset,
+            lower_quantile=config.train.clip_lower_quantile,
+            upper_quantile=config.train.clip_upper_quantile,
+            max_segments=config.train.statistics_max_segments,
+            random_state=config.train.random_state,
+        )
+        train_dataset = ChbmitPoolDataset(samples, train_sub_indices, preprocessor)
+        val_dataset = ChbmitPoolDataset(samples, val_indices, preprocessor)
+        test_dataset = ChbmitPoolDataset(samples, test_indices, preprocessor)
+        train_sampler = EpochBalancedSampler(
+            train_dataset.labels, seed=config.train.random_state
+        )
 
         logger.info(
-            "Train=%d | Val=%d | Test=%d | Test seizure ratio=%.4f",
-            len(y_train_sub),
-            len(y_val),
-            len(y_test),
-            float(np.mean(y_test)),
+            "Train pool=%d | Train epoch=%d (dynamic 1:1) | Val=%d | Test=%d | "
+            "Test seizure ratio=%.4f",
+            len(train_dataset),
+            len(train_sampler),
+            len(val_dataset),
+            len(test_dataset),
+            float(np.mean(y[test_indices])),
         )
 
         train_loader = DataLoader(
-            make_tensor_dataset(X_train_sub, y_train_sub),
+            train_dataset,
             batch_size=config.train.batch_size,
-            shuffle=True,
+            sampler=train_sampler,
             drop_last=True,
             num_workers=config.train.num_workers,
         )
         val_loader = DataLoader(
-            make_tensor_dataset(X_val, y_val),
+            val_dataset,
             batch_size=config.train.batch_size,
             shuffle=False,
             num_workers=config.train.num_workers,
         )
         test_loader = DataLoader(
-            make_tensor_dataset(X_test, y_test),
+            test_dataset,
             batch_size=config.train.batch_size,
             shuffle=False,
             num_workers=config.train.num_workers,
@@ -194,7 +219,14 @@ def main() -> None:
             if val_metrics.accuracy > best_val_acc:
                 best_val_acc = val_metrics.accuracy
                 best_epoch = epoch
-                torch.save(model.state_dict(), best_model_path)
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "preprocessor": preprocessor.as_dict(),
+                        "test_patient": test_pid,
+                    },
+                    best_model_path,
+                )
                 logger.info(
                     "[BEST] fold=%d epoch=%d val_acc=%.4f",
                     fold,
@@ -213,7 +245,8 @@ def main() -> None:
 
         plot_training_summary(history, run_dir / f"training_summary_{test_pid}.png")
 
-        model.load_state_dict(torch.load(best_model_path, map_location=device))
+        checkpoint = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
         test_metrics, y_true, y_pred, _ = evaluate(model, device, test_loader, criterion)
         plot_confusion_matrix(y_true, y_pred, run_dir / f"confusion_matrix_{test_pid}.png")
 

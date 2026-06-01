@@ -21,6 +21,7 @@ env/
 .env.*
 
 # Data, outputs, and model artifacts
+CHBMIT/
 data/*
 !data/.gitkeep
 runs/*

@@ -31,6 +31,9 @@ class TrainConfig:
     val_size: float
     random_state: int
     num_workers: int
+    clip_lower_quantile: float
+    clip_upper_quantile: float
+    statistics_max_segments: int
 
 
 @dataclass
