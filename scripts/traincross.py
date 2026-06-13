@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import math
+from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +51,124 @@ def split_train_val(indices, labels, val_size: float, random_state: int):
         random_state=random_state,
         stratify=stratify,
     )
+
+
+@dataclass
+class BinaryMetrics:
+    loss: float
+    accuracy: float
+    auc: float
+    pr_auc: float
+    precision: float
+    recall: float
+    specificity: float
+    balanced_accuracy: float
+    f1: float
+    threshold: float
+
+
+def calculate_binary_metrics(y_true, y_score, loss: float, threshold: float):
+    import numpy as np
+    from sklearn.metrics import (
+        accuracy_score,
+        average_precision_score,
+        balanced_accuracy_score,
+        confusion_matrix,
+        f1_score,
+        precision_score,
+        recall_score,
+        roc_auc_score,
+    )
+
+    auc = math.nan
+    pr_auc = math.nan
+    if len(np.unique(y_true)) == 2:
+        auc = float(roc_auc_score(y_true, y_score))
+        pr_auc = float(average_precision_score(y_true, y_score))
+
+    y_pred = (y_score >= threshold).astype(np.int64)
+    tn, fp, _, _ = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    metrics = BinaryMetrics(
+        loss=float(loss),
+        accuracy=float(accuracy_score(y_true, y_pred)),
+        auc=auc,
+        pr_auc=pr_auc,
+        precision=float(precision_score(y_true, y_pred, zero_division=0)),
+        recall=float(recall_score(y_true, y_pred, zero_division=0)),
+        specificity=float(tn / max(tn + fp, 1)),
+        balanced_accuracy=float(balanced_accuracy_score(y_true, y_pred)),
+        f1=float(f1_score(y_true, y_pred, zero_division=0)),
+        threshold=float(threshold),
+    )
+    return metrics, y_pred
+
+
+def evaluate_binary(model, device, loader, criterion, threshold: float = 0.5):
+    import numpy as np
+    import torch
+
+    model.eval()
+    y_true = []
+    y_score = []
+    total_loss = 0.0
+    total_items = 0
+
+    with torch.no_grad():
+        for data, target in loader:
+            data = data.to(device)
+            target = target.to(device)
+            outputs = model(data)
+            loss = criterion(outputs, target)
+            probabilities = torch.softmax(outputs, dim=1)
+
+            total_loss += loss.item() * data.size(0)
+            total_items += data.size(0)
+            y_true.extend(target.cpu().numpy().tolist())
+            y_score.extend(probabilities[:, 1].cpu().numpy().tolist())
+
+    y_true = np.asarray(y_true, dtype=np.int64)
+    y_score = np.asarray(y_score, dtype=np.float64)
+    metrics, y_pred = calculate_binary_metrics(
+        y_true,
+        y_score,
+        loss=total_loss / max(total_items, 1),
+        threshold=threshold,
+    )
+    return metrics, y_true, y_pred, y_score
+
+
+def select_decision_threshold(y_true, y_score, metric_name: str, loss: float):
+    import numpy as np
+
+    supported_metrics = {"f1", "balanced_accuracy"}
+    if metric_name not in supported_metrics:
+        raise ValueError(
+            f"Unsupported threshold metric: {metric_name}. "
+            f"Choose one of {sorted(supported_metrics)}"
+        )
+    if len(np.unique(y_true)) != 2:
+        raise ValueError("threshold selection requires both validation classes")
+
+    candidates = np.unique(np.concatenate(([0.0, 0.5, 1.0], y_score)))
+    best_threshold = 0.5
+    best_metrics, _ = calculate_binary_metrics(
+        y_true, y_score, loss=loss, threshold=best_threshold
+    )
+    best_value = getattr(best_metrics, metric_name)
+
+    for threshold in candidates:
+        metrics, _ = calculate_binary_metrics(
+            y_true, y_score, loss=loss, threshold=float(threshold)
+        )
+        value = getattr(metrics, metric_name)
+        if value > best_value or (
+            value == best_value
+            and abs(threshold - 0.5) < abs(best_threshold - 0.5)
+        ):
+            best_threshold = float(threshold)
+            best_metrics = metrics
+            best_value = value
+    return best_threshold, best_metrics
 
 
 def main() -> None:
@@ -114,7 +234,15 @@ def main() -> None:
         return
 
     from epilepsy.plots import plot_confusion_matrix, plot_training_summary
-    from epilepsy.train import evaluate, select_decision_threshold, train_one_epoch
+    from epilepsy.train import train_one_epoch
+
+    threshold_metric = getattr(config.train, "threshold_metric", "f1")
+    checkpoint_metric = getattr(config.train, "checkpoint_metric", "f1")
+    logger.info(
+        "Threshold metric=%s | Checkpoint metric=%s",
+        threshold_metric,
+        checkpoint_metric,
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Using device: %s", device)
@@ -215,13 +343,13 @@ def main() -> None:
             train_loss = train_one_epoch(
                 model, device, train_loader, optimizer, criterion
             )
-            val_metrics, val_y_true, _, val_y_score = evaluate(
+            val_metrics, val_y_true, _, val_y_score = evaluate_binary(
                 model, device, val_loader, criterion
             )
             val_threshold, val_metrics = select_decision_threshold(
                 val_y_true,
                 val_y_score,
-                metric_name=config.train.threshold_metric,
+                metric_name=threshold_metric,
                 loss=val_metrics.loss,
             )
 
@@ -251,7 +379,7 @@ def main() -> None:
                 },
             )
 
-            val_score = getattr(val_metrics, config.train.checkpoint_metric)
+            val_score = getattr(val_metrics, checkpoint_metric)
             if val_score > best_val_score:
                 best_val_score = val_score
                 best_val_acc = val_metrics.accuracy
@@ -264,8 +392,8 @@ def main() -> None:
                         "fold": fold,
                         "num_folds": args.num_folds,
                         "decision_threshold": best_threshold,
-                        "threshold_metric": config.train.threshold_metric,
-                        "checkpoint_metric": config.train.checkpoint_metric,
+                        "threshold_metric": threshold_metric,
+                        "checkpoint_metric": checkpoint_metric,
                         "best_val_score": best_val_score,
                     },
                     best_model_path,
@@ -274,7 +402,7 @@ def main() -> None:
                     "[BEST] fold=%d epoch=%d val_%s=%.4f val_acc=%.4f threshold=%.4f",
                     fold,
                     epoch,
-                    config.train.checkpoint_metric,
+                    checkpoint_metric,
                     best_val_score,
                     best_val_acc,
                     best_threshold,
@@ -297,7 +425,7 @@ def main() -> None:
         checkpoint = torch.load(best_model_path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
         decision_threshold = float(checkpoint.get("decision_threshold", 0.5))
-        test_metrics, y_true, y_pred, _ = evaluate(
+        test_metrics, y_true, y_pred, _ = evaluate_binary(
             model, device, test_loader, criterion, threshold=decision_threshold
         )
         plot_confusion_matrix(
@@ -310,7 +438,7 @@ def main() -> None:
             "specificity=%.4f balanced_acc=%.4f f1=%.4f",
             fold,
             best_epoch,
-            config.train.checkpoint_metric,
+            checkpoint_metric,
             best_val_score,
             decision_threshold,
             test_metrics.accuracy,
