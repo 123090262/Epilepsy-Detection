@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
@@ -111,6 +112,7 @@ class PoolSample:
     label: int
     array_path: Path
     array_index: int
+    record: str
 
 
 @dataclass(frozen=True)
@@ -190,9 +192,11 @@ class ChbmitPoolDataset(Dataset):
 
 
 class EpochBalancedSampler(Sampler[int]):
-    """Yield every positive and an equally sized random negative subset each epoch."""
+    """Yield every positive and a configurable random negative subset each epoch."""
 
-    def __init__(self, labels: Sequence[int], seed: int) -> None:
+    def __init__(
+        self, labels: Sequence[int], seed: int, negative_ratio: float = 1.0
+    ) -> None:
         labels = np.asarray(labels)
         self.positive_indices = np.flatnonzero(labels == 1)
         self.negative_indices = np.flatnonzero(labels == 0)
@@ -200,16 +204,22 @@ class EpochBalancedSampler(Sampler[int]):
             raise ValueError("training split has no seizure samples")
         if len(self.negative_indices) < len(self.positive_indices):
             raise ValueError("training split has fewer non-seizure than seizure samples")
+        if negative_ratio <= 0:
+            raise ValueError("negative_ratio must be positive")
         self.seed = seed
+        self.negative_count = min(
+            len(self.negative_indices),
+            max(1, int(round(len(self.positive_indices) * negative_ratio))),
+        )
         self.epoch = 0
 
     def __len__(self) -> int:
-        return 2 * len(self.positive_indices)
+        return len(self.positive_indices) + self.negative_count
 
     def __iter__(self) -> Iterator[int]:
         rng = np.random.default_rng(self.seed + self.epoch)
         negatives = rng.choice(
-            self.negative_indices, size=len(self.positive_indices), replace=False
+            self.negative_indices, size=self.negative_count, replace=False
         )
         indices = np.concatenate((self.positive_indices, negatives))
         rng.shuffle(indices)
@@ -240,8 +250,29 @@ def load_pool_samples(config: DataConfig) -> list[PoolSample]:
                     f"Unexpected array shape in {array_path}: {array.shape}; expected "
                     f"(N, {config.num_channels}, {config.segment_length})"
                 )
+            manifest_path = patient_dir / array_name.replace(".npy", "_manifest.csv")
+            records = [array_name] * len(array)
+            if manifest_path.exists():
+                with manifest_path.open("r", encoding="utf-8", newline="") as handle:
+                    rows = list(csv.DictReader(handle))
+                if len(rows) != len(array):
+                    raise ValueError(
+                        f"Manifest length mismatch for {array_path}: "
+                        f"array={len(array)}, manifest={len(rows)}"
+                    )
+                records = [
+                    row.get("edf_name") or records[index]
+                    for index, row in enumerate(rows)
+                ]
+
             samples.extend(
-                PoolSample(patient_dir.name, label, array_path, index)
+                PoolSample(
+                    patient_dir.name,
+                    label,
+                    array_path,
+                    index,
+                    f"{patient_dir.name}/{records[index]}",
+                )
                 for index in range(len(array))
             )
     if not samples:

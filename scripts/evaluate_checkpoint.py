@@ -22,14 +22,13 @@ def main() -> None:
 
     import numpy as np
     import torch
-    import torch.nn as nn
     from torch.utils.data import DataLoader
 
     from epilepsy.config import load_config
     from epilepsy.data import ChannelPreprocessor, ChbmitPoolDataset, load_pool_samples
-    from epilepsy.models import EpilepsyGATNet
+    from epilepsy.experiment import build_model
     from epilepsy.plots import plot_confusion_matrix
-    from epilepsy.train import evaluate
+    from epilepsy.train import build_criterion, evaluate
 
     config = load_config(args.config)
     samples = load_pool_samples(config.data)
@@ -60,16 +59,14 @@ def main() -> None:
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = EpilepsyGATNet(
-        fs=config.data.sample_rate,
-        num_classes=config.model.num_classes,
-        feature_dim=config.model.feature_dim,
-        hid_dim=config.model.hidden_dim,
-    ).to(device)
+    model = build_model(config, device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    criterion = nn.CrossEntropyLoss()
-    metrics, y_true, y_pred, _ = evaluate(model, device, loader, criterion)
+    criterion = build_criterion(config.train)
+    threshold = float(checkpoint.get("decision_threshold", 0.5))
+    metrics, y_true, y_pred, _ = evaluate(
+        model, device, loader, criterion, threshold=threshold
+    )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     plot_confusion_matrix(

@@ -116,3 +116,28 @@ class FeatureExtractor(nn.Module):
         batch_size, channels, length = x.shape
         out = self.tcn(x.reshape(batch_size * channels, 1, length))
         return out.reshape(batch_size, channels, -1)
+
+
+class SpectralFeatureExtractor(nn.Module):
+    """Differentiable log-bandpower features for the five canonical EEG bands."""
+
+    def __init__(self, fs: int = 256, feature_dim: int = 128) -> None:
+        super().__init__()
+        self.fs = fs
+        self.bands = ((0.5, 4.0), (4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 40.0))
+        self.project = nn.Sequential(
+            nn.LayerNorm(len(self.bands)),
+            nn.Linear(len(self.bands), feature_dim),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        spectrum = torch.fft.rfft(x, dim=-1)
+        power = spectrum.abs().square() / max(x.size(-1), 1)
+        freqs = torch.fft.rfftfreq(x.size(-1), d=1.0 / self.fs).to(x.device)
+        bandpower = []
+        for low, high in self.bands:
+            mask = (freqs >= low) & (freqs < high)
+            bandpower.append(power[..., mask].mean(dim=-1))
+        features = torch.log1p(torch.stack(bandpower, dim=-1))
+        return self.project(features)

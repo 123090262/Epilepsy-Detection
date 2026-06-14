@@ -13,7 +13,20 @@ def save_summary(path: str | Path, fold_metrics: list[dict[str, Any]]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    metric_names = ["acc", "auc", "prec", "recall", "f1"]
+    metric_names = [
+        name
+        for name in (
+            "acc",
+            "auc",
+            "pr_auc",
+            "prec",
+            "recall",
+            "specificity",
+            "balanced_acc",
+            "f1",
+        )
+        if all(name in metrics for metrics in fold_metrics)
+    ]
     values = np.array(
         [[m[name] for name in metric_names] for m in fold_metrics],
         dtype=np.float64,

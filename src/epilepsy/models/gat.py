@@ -112,13 +112,12 @@ class PriorMatrixBuilder(nn.Module):
         return [0.0, 0.0, 0.0]
 
     def forward(self, A_plv: torch.Tensor) -> torch.Tensor:
-        a_plv_mean = A_plv.mean(dim=0)
         weights = F.softmax(self.weight_fusion, dim=0)
-        a0 = weights[0] * self.A_geo + weights[1] * a_plv_mean
-        a_sparse = F.softplus(self.E)
+        a0 = weights[0] * self.A_geo.unsqueeze(0) + weights[1] * A_plv
+        a_sparse = F.softplus((self.E + self.E.T) / 2).unsqueeze(0)
         a_init = a0 * a_sparse
-        a_init = (a_init + a_init.T) / 2
-        mask = 1.0 - torch.eye(self.C, device=a_init.device)
+        a_init = (a_init + a_init.transpose(1, 2)) / 2
+        mask = 1.0 - torch.eye(self.C, device=a_init.device).unsqueeze(0)
         a_init = a_init * mask
         return torch.sigmoid(self.beta * (a_init - self.tau))
 
@@ -176,29 +175,40 @@ class GraphAttentionLayer(nn.Module):
 class TAGAT(nn.Module):
     """Single-segment temporal-aware graph attention branch."""
 
-    def __init__(self, feature_dim: int, hid_dim: int, c_dim: int = 64) -> None:
+    def __init__(
+        self, feature_dim: int, hid_dim: int, c_dim: int = 64, dropout: float = 0.3
+    ) -> None:
         super().__init__()
         self.c_proj = nn.Sequential(nn.Linear(feature_dim, c_dim), nn.ReLU(inplace=True))
-        self.gat1 = GraphAttentionLayer(feature_dim, hid_dim, c_dim=c_dim, dropout=0.3)
-        self.gat2 = GraphAttentionLayer(hid_dim, hid_dim, c_dim=c_dim, dropout=0.3)
+        self.gat1 = GraphAttentionLayer(feature_dim, hid_dim, c_dim=c_dim, dropout=dropout)
+        self.gat2 = GraphAttentionLayer(hid_dim, hid_dim, c_dim=c_dim, dropout=dropout)
+        self.norm1 = nn.LayerNorm(hid_dim)
+        self.norm2 = nn.LayerNorm(hid_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         c = self.c_proj(x.mean(dim=1))
         nodes = x.size(1)
         adj = torch.ones(nodes, nodes, device=x.device)
-        x = self.gat1(x, adj=adj, c=c)
-        return self.gat2(x, adj=adj, c=c)
+        x = self.norm1(self.gat1(x, adj=adj, c=c))
+        return self.norm2(x + self.gat2(x, adj=adj, c=c))
 
 
 class SCGAT(nn.Module):
     """Spatial conditional graph attention branch with prior adjacency."""
 
     def __init__(
-        self, feature_dim: int, hid_dim: int, num_classes: int = 2, c_dim: int = 64
+        self,
+        feature_dim: int,
+        hid_dim: int,
+        num_classes: int = 2,
+        c_dim: int = 64,
+        dropout: float = 0.3,
     ) -> None:
         super().__init__()
-        self.gat1 = GraphAttentionLayer(feature_dim, hid_dim, c_dim=c_dim, dropout=0.3)
-        self.gat2 = GraphAttentionLayer(hid_dim, hid_dim, c_dim=c_dim, dropout=0.3)
+        self.gat1 = GraphAttentionLayer(feature_dim, hid_dim, c_dim=c_dim, dropout=dropout)
+        self.gat2 = GraphAttentionLayer(hid_dim, hid_dim, c_dim=c_dim, dropout=dropout)
+        self.norm1 = nn.LayerNorm(hid_dim)
+        self.norm2 = nn.LayerNorm(hid_dim)
         self.aux_fc = nn.Linear(hid_dim, num_classes)
         self.cond_mlp = nn.Sequential(
             nn.Linear(feature_dim, 128),
@@ -214,8 +224,12 @@ class SCGAT(nn.Module):
         if adj_prior.dim() == 2:
             adj_prior = adj_prior.unsqueeze(0).expand(batch_size, -1, -1)
 
-        x = self.gat1(x, adj=adj_full, c=c, prior_adj=adj_prior, prior_lambda=1.0)
-        x = self.gat2(x, adj=adj_full, c=c, prior_adj=adj_prior, prior_lambda=1.0)
+        x = self.norm1(
+            self.gat1(x, adj=adj_full, c=c, prior_adj=adj_prior, prior_lambda=1.0)
+        )
+        x = self.norm2(
+            x + self.gat2(x, adj=adj_full, c=c, prior_adj=adj_prior, prior_lambda=1.0)
+        )
         aux_logits = self.aux_fc(x.mean(dim=1))
         return x, aux_logits
 
@@ -250,7 +264,17 @@ def compute_plv_batch(x: torch.Tensor) -> torch.Tensor:
         PLV tensor with shape `(B, C, C)` and values in `[0, 1]`.
     """
 
-    spectrum = torch.fft.rfft(x, dim=-1)
-    phase = spectrum / spectrum.abs().clamp(min=1e-8)
-    freq_count = phase.shape[-1]
-    return torch.bmm(phase, phase.conj().transpose(1, 2)).abs() / freq_count
+    spectrum = torch.fft.fft(x, dim=-1)
+    length = x.size(-1)
+    hilbert_mask = torch.zeros(length, dtype=x.dtype, device=x.device)
+    hilbert_mask[0] = 1
+    if length % 2 == 0:
+        hilbert_mask[length // 2] = 1
+        hilbert_mask[1 : length // 2] = 2
+    else:
+        hilbert_mask[1 : (length + 1) // 2] = 2
+    analytic = torch.fft.ifft(spectrum * hilbert_mask, dim=-1)
+    unit_phase = analytic / analytic.abs().clamp(min=1e-8)
+    return (
+        torch.bmm(unit_phase, unit_phase.conj().transpose(1, 2)).abs() / length
+    ).to(dtype=x.dtype)

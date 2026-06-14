@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,18 @@ class TrainConfig:
     clip_lower_quantile: float
     clip_upper_quantile: float
     statistics_max_segments: int
+    optimizer: str = "adamw"
+    scheduler: str = "onecycle"
+    loss: str = "focal"
+    focal_gamma: float = 2.0
+    focal_alpha: float = 0.65
+    negative_ratio: float = 3.0
+    max_grad_norm: float = 1.0
+    early_stopping_patience: int = 10
+    threshold_metric: str = "composite"
+    checkpoint_metric: str = "composite"
+    min_threshold: float = 0.05
+    max_threshold: float = 0.95
 
 
 @dataclass
@@ -41,6 +53,10 @@ class ModelConfig:
     feature_dim: int
     hidden_dim: int
     num_classes: int
+    dropout: float = 0.35
+    graph_dropout: float = 0.25
+    spectral_fusion: bool = True
+    auxiliary_weight: float = 0.25
 
 
 @dataclass
@@ -72,7 +88,12 @@ def build_section(section_name: str, section_data: Any, config_type: type) -> An
 
     expected = {field.name for field in fields(config_type)}
     actual = set(section_data)
-    missing = sorted(expected - actual)
+    required = {
+        field.name
+        for field in fields(config_type)
+        if field.default is MISSING and field.default_factory is MISSING
+    }
+    missing = sorted(required - actual)
     unknown = sorted(actual - expected)
 
     if missing:

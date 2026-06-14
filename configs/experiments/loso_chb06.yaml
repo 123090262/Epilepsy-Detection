@@ -17,11 +17,27 @@ train:
   clip_lower_quantile: 0.001
   clip_upper_quantile: 0.999
   statistics_max_segments: 4096
+  optimizer: adamw
+  scheduler: onecycle
+  loss: focal
+  focal_gamma: 2.0
+  focal_alpha: 0.65
+  negative_ratio: 3.0
+  max_grad_norm: 1.0
+  early_stopping_patience: 10
+  threshold_metric: composite
+  checkpoint_metric: composite
+  min_threshold: 0.05
+  max_threshold: 0.95
 
 model:
   feature_dim: 128
-  hidden_dim: 256
+  hidden_dim: 128
   num_classes: 2
+  dropout: 0.40
+  graph_dropout: 0.25
+  spectral_fusion: true
+  auxiliary_weight: 0.25
 
 output:
   run_dir: runs

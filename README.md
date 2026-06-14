@@ -1,6 +1,6 @@
 # Epilepsy
 
-EEG epilepsy detection project based on CHB-MIT style CSV segments.
+EEG seizure detection on CHB-MIT with leakage-resistant grouped validation.
 
 This repository is being organized from the original notebook into a standard Python project layout. The current goal is to make data loading, model definition, training, evaluation, and experiment tracking easier to maintain.
 
@@ -39,11 +39,37 @@ Check that the config and dataset can be loaded:
 python scripts/train_loso.py --config configs/default.yaml --dry-run
 ```
 
-Start LOSO training:
+Start strict LOSO training (outer patient and validation patients are disjoint):
 
 ```bash
 python scripts/train_loso.py --config configs/default.yaml
 ```
+
+Run 10-fold CV grouped by EDF recording (the default):
+
+```bash
+python scripts/traincross.py --config configs/default.yaml --num-folds 10
+```
+
+Run the stricter patient-grouped 10-fold variant:
+
+```bash
+python scripts/traincross.py --config configs/default.yaml --num-folds 10 --group-level patient
+```
+
+Tune one LOSO outer fold without exposing its test patient to the search:
+
+```bash
+python scripts/search_hyperparams.py \
+  --config configs/default.yaml \
+  --test-patient chb06 \
+  --trials 12 \
+  --inner-folds 3 \
+  --epochs 20
+```
+
+The search writes a ranked table and `best_config.yaml`. Use that file with
+`train_loso.py`; it contains only the requested outer test patient.
 
 Evaluate a checkpoint:
 
