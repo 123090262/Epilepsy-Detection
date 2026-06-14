@@ -1,6 +1,6 @@
 # Epilepsy
 
-EEG seizure detection on CHB-MIT with leakage-resistant grouped validation.
+EEG seizure detection on CHB-MIT with stratified and grouped validation modes.
 
 This repository is being organized from the original notebook into a standard Python project layout. The current goal is to make data loading, model definition, training, evaluation, and experiment tracking easier to maintain.
 
@@ -45,15 +45,16 @@ Start strict LOSO training (outer patient and validation patients are disjoint):
 python scripts/train_loso.py --config configs/default.yaml
 ```
 
-Run 10-fold CV grouped by EDF recording (the default):
+Run stratified random-segment 10-fold CV (the default):
 
 ```bash
 python scripts/traincross.py --config configs/default.yaml --num-folds 10
 ```
 
-Run the stricter patient-grouped 10-fold variant:
+Run the stricter EDF-record-grouped or patient-grouped variants:
 
 ```bash
+python scripts/traincross.py --config configs/default.yaml --num-folds 10 --group-level record
 python scripts/traincross.py --config configs/default.yaml --num-folds 10 --group-level patient
 ```
 

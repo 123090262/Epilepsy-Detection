@@ -25,8 +25,9 @@
 - The validation threshold maximizes a composite of F1 (60%), balanced
   accuracy (25%), and accuracy (15%). The test threshold is never tuned on the
   test set.
-- Ten-fold CV is grouped by EDF recording by default. LOSO uses unseen patients
-  for both outer testing and inner validation.
+- Ten-fold CV uses stratified random-segment splitting by default. EDF-record
+  and patient grouping remain available through `--group-level`; LOSO uses
+  unseen patients for both outer testing and inner validation.
 
 ## Literature basis
 
@@ -41,5 +42,6 @@
 ## Reporting
 
 Always report accuracy, F1, precision, recall/sensitivity, specificity,
-balanced accuracy, ROC-AUC, and PR-AUC. Do not compare record-grouped CV and
-LOSO numbers as if they measured the same generalization setting.
+balanced accuracy, ROC-AUC, and PR-AUC. Random-segment CV can place segments
+from one EDF/patient in both train and test, so do not compare it with grouped
+CV or LOSO as if they measured the same generalization setting.

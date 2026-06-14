@@ -1,4 +1,4 @@
-"""Train epilepsy classifier with leakage-resistant grouped cross-validation."""
+"""Train epilepsy classifier with stratified or grouped cross-validation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Grouped K-fold training for EEG seizure classification."
+        description="K-fold training for EEG seizure classification."
     )
     parser.add_argument(
         "--config", type=Path, default=PROJECT_ROOT / "configs" / "default.yaml"
@@ -19,9 +19,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-folds", type=int, default=10)
     parser.add_argument(
         "--group-level",
-        choices=("record", "patient"),
-        default="record",
-        help="Keep all segments from an EDF record or patient in one fold.",
+        choices=("segment", "record", "patient"),
+        default="segment",
+        help=(
+            "Split individual segments by default, or keep all segments from "
+            "an EDF record/patient in one fold."
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -32,6 +35,7 @@ def main() -> None:
 
     import numpy as np
     import torch
+    from sklearn.model_selection import StratifiedKFold, train_test_split
 
     from epilepsy.config import dump_config_copy, load_config
     from epilepsy.data import load_pool_samples
@@ -66,17 +70,29 @@ def main() -> None:
         len(np.unique(patient_ids)),
         len(np.unique(record_ids)),
     )
-    logger.info(
-        "Grouped %d-fold CV by %s; no group can appear in both train and test",
-        args.num_folds,
-        args.group_level,
-    )
-    if args.dry_run:
-        list(
-            grouped_kfold_splits(
-                indices, y, groups, args.num_folds, config.train.random_state
-            )
+    if args.group_level == "segment":
+        splitter = StratifiedKFold(
+            n_splits=args.num_folds,
+            shuffle=True,
+            random_state=config.train.random_state,
         )
+        splits = splitter.split(indices, y)
+        logger.info(
+            "Stratified random-segment %d-fold CV (shuffle=True, random_state=%d)",
+            args.num_folds,
+            config.train.random_state,
+        )
+    else:
+        splits = grouped_kfold_splits(
+            indices, y, groups, args.num_folds, config.train.random_state
+        )
+        logger.info(
+            "Grouped %d-fold CV by %s; no group can appear in both train and test",
+            args.num_folds,
+            args.group_level,
+        )
+    if args.dry_run:
+        list(splits)
         logger.info("Dry run finished. No training was started.")
         return
 
@@ -84,18 +100,23 @@ def main() -> None:
     logger.info("Using device: %s", device)
     all_fold_metrics = []
 
-    splits = grouped_kfold_splits(
-        indices, y, groups, args.num_folds, config.train.random_state
-    )
     for fold, (outer_train, test_indices) in enumerate(splits, start=1):
         fold_name = f"fold_{fold:02d}"
-        train_indices, val_indices = grouped_train_val_split(
-            outer_train,
-            y[outer_train],
-            groups[outer_train],
-            config.train.val_size,
-            config.train.random_state + fold,
-        )
+        if args.group_level == "segment":
+            train_indices, val_indices = train_test_split(
+                outer_train,
+                test_size=config.train.val_size,
+                random_state=config.train.random_state + fold,
+                stratify=y[outer_train],
+            )
+        else:
+            train_indices, val_indices = grouped_train_val_split(
+                outer_train,
+                y[outer_train],
+                groups[outer_train],
+                config.train.val_size,
+                config.train.random_state + fold,
+            )
         logger.info(
             "===== Fold %d/%d | train=%d val=%d test=%d test_pos=%.4f =====",
             fold,
