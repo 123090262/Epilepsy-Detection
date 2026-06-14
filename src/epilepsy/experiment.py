@@ -10,11 +10,14 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from epilepsy.chbmit import TARGET_CHANNELS
 from epilepsy.data import (
     ChannelPreprocessor,
     ChbmitPoolDataset,
     EpochBalancedSampler,
-    PoolSample,
+    Sample,
+    RawEdfSegmentReader,
+    build_raw_reader,
     fit_channel_preprocessor,
 )
 from epilepsy.models import EpilepsyGATNet
@@ -43,6 +46,14 @@ class FoldTrainingResult:
 
 
 def build_model(config, device: torch.device) -> EpilepsyGATNet:
+    model_kwargs = {}
+    if config.data.source.lower() == "raw_edf":
+        if config.data.num_channels != len(TARGET_CHANNELS):
+            raise ValueError(
+                f"Raw CHB-MIT uses {len(TARGET_CHANNELS)} common channels, "
+                f"but data.num_channels={config.data.num_channels}"
+            )
+        model_kwargs["channel_names"] = TARGET_CHANNELS
     return EpilepsyGATNet(
         fs=config.data.sample_rate,
         num_classes=config.model.num_classes,
@@ -52,17 +63,21 @@ def build_model(config, device: torch.device) -> EpilepsyGATNet:
         graph_dropout=config.model.graph_dropout,
         spectral_fusion=config.model.spectral_fusion,
         auxiliary_weight=config.model.auxiliary_weight,
+        **model_kwargs,
     ).to(device)
 
 
 def make_eval_loader(
-    samples: Sequence[PoolSample],
+    samples: Sequence[Sample],
     indices: np.ndarray,
     preprocessor: ChannelPreprocessor,
     config,
+    raw_reader: RawEdfSegmentReader | None = None,
 ) -> DataLoader:
+    if config.data.source.lower() == "raw_edf" and raw_reader is None:
+        raw_reader = build_raw_reader(config.data)
     return DataLoader(
-        ChbmitPoolDataset(samples, indices, preprocessor),
+        ChbmitPoolDataset(samples, indices, preprocessor, raw_reader=raw_reader),
         batch_size=config.train.batch_size,
         shuffle=False,
         num_workers=config.train.num_workers,
@@ -70,7 +85,7 @@ def make_eval_loader(
 
 
 def fit_fold(
-    samples: Sequence[PoolSample],
+    samples: Sequence[Sample],
     train_indices: np.ndarray,
     val_indices: np.ndarray,
     config,
@@ -78,6 +93,7 @@ def fit_fold(
     seed: int,
     max_epochs: int | None = None,
     epoch_callback: Callable[[int, float, Metrics], None] | None = None,
+    raw_reader: RawEdfSegmentReader | None = None,
 ) -> FoldTrainingResult:
     train_config = config.train
     if max_epochs is not None:
@@ -88,7 +104,11 @@ def fit_fold(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    statistics_dataset = ChbmitPoolDataset(samples, train_indices)
+    if config.data.source.lower() == "raw_edf" and raw_reader is None:
+        raw_reader = build_raw_reader(config.data)
+    statistics_dataset = ChbmitPoolDataset(
+        samples, train_indices, raw_reader=raw_reader
+    )
     preprocessor = fit_channel_preprocessor(
         statistics_dataset,
         lower_quantile=train_config.clip_lower_quantile,
@@ -96,17 +116,31 @@ def fit_fold(
         max_segments=train_config.statistics_max_segments,
         random_state=seed,
     )
-    train_dataset = ChbmitPoolDataset(samples, train_indices, preprocessor)
-    val_dataset = ChbmitPoolDataset(samples, val_indices, preprocessor)
-    sampler = EpochBalancedSampler(
-        train_dataset.labels,
-        seed=seed,
-        negative_ratio=train_config.negative_ratio,
+    train_dataset = ChbmitPoolDataset(
+        samples, train_indices, preprocessor, raw_reader=raw_reader
     )
+    val_dataset = ChbmitPoolDataset(
+        samples, val_indices, preprocessor, raw_reader=raw_reader
+    )
+    sampling_strategy = train_config.sampling_strategy.lower()
+    sampler = None
+    if sampling_strategy == "balanced":
+        sampler = EpochBalancedSampler(
+            train_dataset.labels,
+            seed=seed,
+            negative_ratio=train_config.negative_ratio,
+        )
+    elif sampling_strategy != "all":
+        raise ValueError(
+            f"Unsupported training sampling strategy: {train_config.sampling_strategy}"
+        )
+    generator = torch.Generator().manual_seed(seed)
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_config.batch_size,
         sampler=sampler,
+        shuffle=sampler is None,
+        generator=generator if sampler is None else None,
         drop_last=False,
         num_workers=train_config.num_workers,
     )
@@ -155,7 +189,11 @@ def fit_fold(
             scheduler.step()
 
         raw_metrics, y_true, _, y_score = evaluate(
-            model, device, val_loader, criterion
+            model,
+            device,
+            val_loader,
+            criterion,
+            segment_duration=config.data.segment_duration,
         )
         threshold, val_metrics = select_decision_threshold(
             y_true,
@@ -164,6 +202,7 @@ def fit_fold(
             loss=raw_metrics.loss,
             min_threshold=train_config.min_threshold,
             max_threshold=train_config.max_threshold,
+            segment_duration=config.data.segment_duration,
         )
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_metrics.loss)
@@ -204,5 +243,5 @@ def fit_fold(
         best_metrics=best_metrics,
         history=history,
         train_pool_size=len(train_dataset),
-        train_epoch_size=len(sampler),
+        train_epoch_size=len(sampler) if sampler is not None else len(train_dataset),
     )

@@ -1,8 +1,19 @@
 data:
-  data_dir: data/chbmit_pool_1to10_22ch
+  source: raw_edf
+  data_dir: CHBMIT
   sample_rate: 256
-  segment_duration: 2.0
-  num_channels: 22
+  segment_duration: 1.0
+  seizure_overlap: 0.5
+  non_seizure_ratio_min: 2.0
+  non_seizure_ratio_max: 3.0
+  num_channels: 18
+  filter_low_hz: 0.5
+  filter_high_hz: 50.0
+  filter_order: 4
+  filter_context_seconds: 4.0
+  raw_cache_segments: 65536
+  sampling_seed: 42
+  use_jne_selected_durations: true
   test_patients:
     - chb01
     - chb02
@@ -28,14 +39,11 @@ data:
     - chb22
     - chb23
     - chb24
-    
-
-
 
 train:
   batch_size: 32
-  num_epochs: 60
-  learning_rate: 0.001
+  num_epochs: 50
+  learning_rate: 0.005
   weight_decay: 0.000001
   val_size: 0.1
   random_state: 42
@@ -43,16 +51,17 @@ train:
   clip_lower_quantile: 0.001
   clip_upper_quantile: 0.999
   statistics_max_segments: 4096
-  optimizer: adamw
-  scheduler: onecycle
-  loss: focal
+  optimizer: adam
+  scheduler: none
+  loss: cross_entropy
   focal_gamma: 2.0
   focal_alpha: 0.65
+  sampling_strategy: all
   negative_ratio: 3.0
   max_grad_norm: 1.0
-  early_stopping_patience: 10
-  threshold_metric: composite
-  checkpoint_metric: composite
+  early_stopping_patience: 5
+  threshold_metric: fixed
+  checkpoint_metric: f1
   min_threshold: 0.05
   max_threshold: 0.95
 

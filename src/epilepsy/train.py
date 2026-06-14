@@ -31,6 +31,7 @@ class Metrics:
     precision: float
     recall: float
     specificity: float
+    fpr_per_hour: float
     balanced_accuracy: float
     f1: float
     composite: float
@@ -45,6 +46,7 @@ class Metrics:
             "precision": self.precision,
             "recall": self.recall,
             "specificity": self.specificity,
+            "fpr_per_hour": self.fpr_per_hour,
             "balanced_accuracy": self.balanced_accuracy,
             "f1": self.f1,
             "composite": self.composite,
@@ -162,6 +164,7 @@ def calculate_binary_metrics(
     y_score: np.ndarray,
     loss: float,
     threshold: float,
+    segment_duration: float = 1.0,
 ) -> tuple[Metrics, np.ndarray]:
     auc = math.nan
     pr_auc = math.nan
@@ -171,6 +174,7 @@ def calculate_binary_metrics(
 
     y_pred = (y_score >= threshold).astype(np.int64)
     tn, fp, _, _ = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    negative_hours = float(np.sum(y_true == 0) * segment_duration / 3600.0)
     accuracy = float(accuracy_score(y_true, y_pred))
     balanced_accuracy = float(balanced_accuracy_score(y_true, y_pred))
     f1 = float(f1_score(y_true, y_pred, zero_division=0))
@@ -185,6 +189,7 @@ def calculate_binary_metrics(
         precision=float(precision_score(y_true, y_pred, zero_division=0)),
         recall=float(recall_score(y_true, y_pred, zero_division=0)),
         specificity=float(tn / max(tn + fp, 1)),
+        fpr_per_hour=float(fp / negative_hours) if negative_hours > 0 else math.nan,
         balanced_accuracy=balanced_accuracy,
         f1=f1,
         composite=composite,
@@ -199,6 +204,7 @@ def evaluate(
     loader: DataLoader,
     criterion: nn.Module,
     threshold: float = 0.5,
+    segment_duration: float = 1.0,
 ) -> tuple[Metrics, np.ndarray, np.ndarray, np.ndarray]:
     model.eval()
     y_true: list[int] = []
@@ -226,6 +232,7 @@ def evaluate(
         y_score_np,
         loss=total_loss / max(total_items, 1),
         threshold=threshold,
+        segment_duration=segment_duration,
     )
     return metrics, y_true_np, y_pred_np, y_score_np
 
@@ -237,14 +244,21 @@ def select_decision_threshold(
     loss: float,
     min_threshold: float = 0.05,
     max_threshold: float = 0.95,
+    segment_duration: float = 1.0,
 ) -> tuple[float, Metrics]:
-    supported = {"f1", "balanced_accuracy", "accuracy", "composite"}
+    supported = {"fixed", "f1", "balanced_accuracy", "accuracy", "composite"}
     if metric_name not in supported:
         raise ValueError(f"Unsupported threshold metric: {metric_name}")
     if len(np.unique(y_true)) != 2:
         raise ValueError("threshold selection requires both validation classes")
     if not 0 <= min_threshold < max_threshold <= 1:
         raise ValueError("threshold bounds must satisfy 0 <= min < max <= 1")
+
+    if metric_name == "fixed":
+        metrics, _ = calculate_binary_metrics(
+            y_true, y_score, loss, 0.5, segment_duration=segment_duration
+        )
+        return 0.5, metrics
 
     candidates = np.unique(
         np.concatenate(
@@ -256,10 +270,18 @@ def select_decision_threshold(
         )
     )
     best_threshold = 0.5
-    best_metrics, _ = calculate_binary_metrics(y_true, y_score, loss, best_threshold)
+    best_metrics, _ = calculate_binary_metrics(
+        y_true, y_score, loss, best_threshold, segment_duration=segment_duration
+    )
     best_value = getattr(best_metrics, metric_name)
     for threshold in candidates:
-        metrics, _ = calculate_binary_metrics(y_true, y_score, loss, float(threshold))
+        metrics, _ = calculate_binary_metrics(
+            y_true,
+            y_score,
+            loss,
+            float(threshold),
+            segment_duration=segment_duration,
+        )
         value = getattr(metrics, metric_name)
         if value > best_value or (
             np.isclose(value, best_value)

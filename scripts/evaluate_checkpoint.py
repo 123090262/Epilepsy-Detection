@@ -22,16 +22,15 @@ def main() -> None:
 
     import numpy as np
     import torch
-    from torch.utils.data import DataLoader
 
     from epilepsy.config import load_config
-    from epilepsy.data import ChannelPreprocessor, ChbmitPoolDataset, load_pool_samples
-    from epilepsy.experiment import build_model
+    from epilepsy.data import ChannelPreprocessor, load_samples
+    from epilepsy.experiment import build_model, make_eval_loader
     from epilepsy.plots import plot_confusion_matrix
     from epilepsy.train import build_criterion, evaluate
 
     config = load_config(args.config)
-    samples = load_pool_samples(config.data)
+    samples = load_samples(config.data)
     patient_ids = np.asarray([sample.patient for sample in samples])
 
     if args.patient not in np.unique(patient_ids):
@@ -43,7 +42,7 @@ def main() -> None:
             "Checkpoint does not contain fold preprocessing parameters. "
             "Use a checkpoint created by the updated LOSO training script."
         )
-    checkpoint_patient = checkpoint.get("test_patient")
+    checkpoint_patient = checkpoint.get("test_patient") or checkpoint.get("patient")
     if checkpoint_patient is not None and checkpoint_patient != args.patient:
         raise ValueError(
             f"Checkpoint was trained for test patient {checkpoint_patient}, "
@@ -51,12 +50,7 @@ def main() -> None:
         )
     preprocessor = ChannelPreprocessor.from_dict(checkpoint["preprocessor"])
     test_indices = np.flatnonzero(patient_ids == args.patient)
-    loader = DataLoader(
-        ChbmitPoolDataset(samples, test_indices, preprocessor),
-        batch_size=config.train.batch_size,
-        shuffle=False,
-        num_workers=config.train.num_workers,
-    )
+    loader = make_eval_loader(samples, test_indices, preprocessor, config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(config, device)
@@ -65,7 +59,12 @@ def main() -> None:
     criterion = build_criterion(config.train)
     threshold = float(checkpoint.get("decision_threshold", 0.5))
     metrics, y_true, y_pred, _ = evaluate(
-        model, device, loader, criterion, threshold=threshold
+        model,
+        device,
+        loader,
+        criterion,
+        threshold=threshold,
+        segment_duration=config.data.segment_duration,
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)

@@ -1,84 +1,79 @@
-# Epilepsy
+# Epilepsy Detection
 
-EEG seizure detection on CHB-MIT with stratified and grouped validation modes.
+End-to-end CHB-MIT seizure detection with the project's TCN, spectral fusion,
+and dual graph-attention model. The default protocol follows Li et al., JNE
+22 (2025) 056016 where the paper is sufficiently specified.
 
-This repository is being organized from the original notebook into a standard Python project layout. The current goal is to make data loading, model definition, training, evaluation, and experiment tracking easier to maintain.
+## Data
 
-## Project Structure
+Point `data.data_dir` in `configs/default.yaml` at the raw CHB-MIT folder:
 
 ```text
-configs/              YAML configuration files for training and experiments
-src/epilepsy/         Python package source code
-src/epilepsy/models/  Model components
-scripts/              Command line entry scripts
-notebooks/            Exploratory notebooks
-data/                 Local data placeholder, ignored by Git
-runs/                 Training outputs, ignored by Git
-checkpoints/          Model checkpoints, ignored by Git
-docs/                 Experiment notes and project documents
+CHBMIT/
+  chb01/
+    chb01-summary.txt
+    chb01_01.edf
+    ...
+  chb24/
+    ...
 ```
 
-## Next Steps
+No 1:10 seizure/non-seizure waveform pool is built. EDF windows are indexed
+deterministically and read, filtered, and standardized during training.
 
-1. Move reusable code from `notebooks/留一2.ipynb` into `src/epilepsy/`.
-2. Read training parameters from `configs/default.yaml`.
-3. Run training through `scripts/train_loso.py`.
-4. Save experiment outputs under `runs/` and checkpoints under `checkpoints/`.
+## Protocol
 
-## Usage
+- 18 bipolar channels shared across CHB-MIT cases; referential `*-CS2` files
+  are converted to the same bipolar montage.
+- Fourth-order 0.5-50 Hz zero-phase bandpass filter.
+- One-second windows at 256 Hz.
+- Seizure windows overlap by 0.5 seconds.
+- Non-seizure windows come from seizure-free EDF files. Their per-case
+  durations reproduce table 1 of the JNE paper (approximately 2x-3x each
+  case's seizure duration).
+- Fold-specific clipping and channel Z-score statistics are fitted on the
+  training split only.
+- Maximum 50 epochs, early-stopping patience 5, fixed 0.5 decision threshold,
+  and checkpoint selection by validation F1.
 
-Install dependencies:
+## Run
+
+Install the project in the remote environment:
 
 ```bash
 pip install -e .
 ```
 
-Check that the config and dataset can be loaded:
+Validate indexing without training:
 
 ```bash
-python scripts/train_loso.py --config configs/default.yaml --dry-run
+python scripts/traincross.py --config configs/default.yaml --patients chb01 --dry-run
+python scripts/train_loso.py --config configs/default.yaml --test-patients chb01 --dry-run
 ```
 
-Start strict LOSO training (outer patient and validation patients are disjoint):
-
-```bash
-python scripts/train_loso.py --config configs/default.yaml
-```
-
-Run stratified random-segment 10-fold CV (the default):
+Run patient-specific ten-fold CV for all configured cases:
 
 ```bash
 python scripts/traincross.py --config configs/default.yaml --num-folds 10
 ```
 
-Run the stricter EDF-record-grouped or patient-grouped variants:
+The default random segment split is the paper-comparable setting. A stricter
+analysis keeps windows from one seizure event together:
 
 ```bash
-python scripts/traincross.py --config configs/default.yaml --num-folds 10 --group-level record
-python scripts/traincross.py --config configs/default.yaml --num-folds 10 --group-level patient
+python scripts/traincross.py --config configs/default.yaml --num-folds 10 --split-level event
 ```
 
-Tune one LOSO outer fold without exposing its test patient to the search:
+Run LOPOCV. Each held-out patient is absent from training and validation:
 
 ```bash
-python scripts/search_hyperparams.py \
-  --config configs/default.yaml \
-  --test-patient chb06 \
-  --trials 12 \
-  --inner-folds 3 \
-  --epochs 20
+python scripts/train_loso.py --config configs/default.yaml
 ```
 
-The search writes a ranked table and `best_config.yaml`. Use that file with
-`train_loso.py`; it contains only the requested outer test patient.
+LOPOCV writes `summary_sampled.json` for comparison with the paper's sampled
+classification table and `summary_continuous.json` for the complete held-out
+patient timeline. Use `--skip-continuous-eval` only when the full audit is not
+required.
 
-Evaluate a checkpoint:
-
-```bash
-python scripts/evaluate_checkpoint.py \
-  --config configs/default.yaml \
-  --checkpoint checkpoints/<run-name>/best_model_test_chb06.pth \
-  --patient chb06
-```
-
-Large files such as raw data, training outputs, and model checkpoints are intentionally ignored by Git.
+Training outputs are written under `runs/`; checkpoints are written under
+`checkpoints/`.

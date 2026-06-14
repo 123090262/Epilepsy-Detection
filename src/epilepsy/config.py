@@ -16,6 +16,17 @@ class DataConfig:
     segment_duration: float
     num_channels: int
     test_patients: tuple[str, ...]
+    source: str = "raw_edf"
+    seizure_overlap: float = 0.5
+    non_seizure_ratio_min: float = 2.0
+    non_seizure_ratio_max: float = 3.0
+    filter_low_hz: float = 0.5
+    filter_high_hz: float = 50.0
+    filter_order: int = 4
+    filter_context_seconds: float = 4.0
+    raw_cache_segments: int = 65536
+    sampling_seed: int = 42
+    use_jne_selected_durations: bool = True
 
     @property
     def segment_length(self) -> int:
@@ -46,6 +57,7 @@ class TrainConfig:
     checkpoint_metric: str = "composite"
     min_threshold: float = 0.05
     max_threshold: float = 0.95
+    sampling_strategy: str = "all"
 
 
 @dataclass

@@ -1,4 +1,5 @@
 data:
+  source: pool
   data_dir: data/chbmit_pool_1to10_22ch
   sample_rate: 256
   segment_duration: 2.0
@@ -19,6 +20,7 @@ train:
   clip_lower_quantile: 0.001
   clip_upper_quantile: 0.999
   statistics_max_segments: 4096
+  sampling_strategy: balanced
 
 model:
   feature_dim: 128

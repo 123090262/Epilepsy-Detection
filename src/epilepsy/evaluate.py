@@ -22,6 +22,7 @@ def save_summary(path: str | Path, fold_metrics: list[dict[str, Any]]) -> None:
             "prec",
             "recall",
             "specificity",
+            "fpr_per_hour",
             "balanced_acc",
             "f1",
         )

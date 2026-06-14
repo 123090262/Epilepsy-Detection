@@ -1,4 +1,5 @@
 data:
+  source: pool
   data_dir: data/chbmit_pool_1to10_22ch
   sample_rate: 256
   segment_duration: 2.0
@@ -22,6 +23,7 @@ train:
   loss: focal
   focal_gamma: 2.0
   focal_alpha: 0.65
+  sampling_strategy: balanced
   negative_ratio: 3.0
   max_grad_norm: 1.0
   early_stopping_patience: 10

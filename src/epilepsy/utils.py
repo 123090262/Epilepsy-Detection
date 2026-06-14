@@ -10,7 +10,7 @@ from typing import Any
 
 
 def make_run_dir(base_dir: str | Path, name: str | None = None) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     run_name = timestamp if name is None else f"{timestamp}_{name}"
     run_dir = Path(base_dir) / run_name
     run_dir.mkdir(parents=True, exist_ok=False)

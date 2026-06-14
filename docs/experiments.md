@@ -1,47 +1,64 @@
-# Experiment Protocol
+# JNE Experiment Protocol
 
-## Why the previous F1 was low
+## Paper Target
 
-- The data pool is 10:1 non-seizure to seizure. Training every epoch at 1:1
-  changes the class prior and can produce too many positive predictions.
-- LOSO selected checkpoints by validation accuracy at a fixed 0.5 threshold.
-  Accuracy is dominated by the negative class and is a poor early-stopping
-  objective for seizure detection.
-- Validation segments were randomly split, so segments from the same patient
-  and EDF recording could appear in training and validation.
-- The graph prior averaged PLV over the batch, making a sample's prediction
-  depend on unrelated samples in the same batch.
+Li et al., *Feature fusion based on global-local weighted attention model for
+automatic epileptic seizure detection*, Journal of Neural Engineering 22
+(2025) 056016, reports the following CHB-MIT ten-fold results:
 
-## Updated method
+| Accuracy | F1 | Sensitivity | Precision | FPR/h |
+|---:|---:|---:|---:|---:|
+| 98.82% | 98.15% | 98.96% | 98.88% | 0.108 |
 
-- Temporal TCN features are fused with differentiable delta/theta/alpha/beta/
-  gamma log-bandpower features before dual graph attention.
-- PLV is computed from the analytic signal and a separate dynamic graph is
-  retained for every sample.
-- Residual graph-attention layers and the spatial auxiliary classifier improve
-  gradient flow and branch supervision.
-- Focal loss, a 3:1 dynamic negative sampler, AdamW, OneCycle scheduling,
-  gradient clipping, and early stopping target imbalance and optimization.
-- The validation threshold maximizes a composite of F1 (60%), balanced
-  accuracy (25%), and accuracy (15%). The test threshold is never tuned on the
-  test set.
-- Ten-fold CV uses stratified random-segment splitting by default. EDF-record
-  and patient grouping remain available through `--group-level`; LOSO uses
-  unseen patients for both outer testing and inner validation.
+Its average reported LOPOCV results are 89.84% accuracy, 86.76% F1, 89.52%
+sensitivity, 88.94% precision, and 0.127 FPR/h.
 
-## Literature basis
+## Implemented Design
 
-- Li et al., *Journal of Neural Engineering* 22 (2025) 056016: temporal,
-  spatial, and spectral fusion; validation-F1 model selection; grid search; and
-  patient-independent evaluation.
-- Lin et al., ICCV 2017: focal loss for severe class imbalance.
-- Cui et al., CVPR 2019: class-aware treatment of long-tailed data.
-- Song et al., IEEE TNSRE 2023: convolution plus attention for robust EEG
-  representations (EEG Conformer).
+The architecture remains this repository's temporal/spectral TCN plus dynamic
+PLV/geometric graph-attention model. Data handling and evaluation follow the
+paper:
+
+1. Read the raw CHB-MIT EDF files directly.
+2. Use 18 common bipolar channels, reconstructing bipolar channels from a
+   shared reference when required.
+3. Apply a 0.5-50 Hz zero-phase bandpass filter.
+4. Create one-second seizure windows with 0.5-second overlap.
+5. Draw non-seizure windows only from seizure-free EDF files; selected duration
+   reproduces the per-case values in the paper's table 1 (approximately 2x-3x
+   seizure duration).
+6. Reserve 10% of each development split for validation.
+7. Train for at most 50 epochs with patience 5 and select the highest
+   validation-F1 checkpoint.
+8. Keep the classification threshold fixed at 0.5; the test fold never tunes
+   a threshold or preprocessing statistic.
+
+Patient-specific ten-fold CV is run separately for each CHB-MIT case. LOPOCV
+trains on all sampled data except the held-out patient. The default LOPO
+validation is a stratified sample split to match the paper;
+`--validation-level patient` provides a stricter development-patient split.
 
 ## Reporting
 
-Always report accuracy, F1, precision, recall/sensitivity, specificity,
-balanced accuracy, ROC-AUC, and PR-AUC. Random-segment CV can place segments
-from one EDF/patient in both train and test, so do not compare it with grouped
-CV or LOSO as if they measured the same generalization setting.
+Every summary reports accuracy, F1, precision, sensitivity/recall, specificity,
+balanced accuracy, ROC-AUC, PR-AUC, and FPR/h. FPR/h is computed as false
+positive windows divided by the evaluated negative duration in hours.
+
+For LOPOCV, two result sets are intentionally kept separate:
+
+- `summary_sampled.json`: the paper-comparable 2-3x sampled test set.
+- `summary_continuous.json`: every non-overlapping one-second window from the
+  complete held-out patient recordings.
+
+## Reproducibility Notes
+
+Random segment ten-fold CV can place adjacent 50%-overlapping windows from the
+same seizure in training and testing. This matches the paper-facing protocol
+but is optimistic. Report `--split-level event` results alongside it when
+making a generalization claim.
+
+The paper states that ICA was used but does not specify fitting duration,
+component selection, rejection criteria, or whether ICA was fitted before or
+after cross-validation. This implementation does not guess those choices. It
+uses the specified bandpass filter plus training-only robust standardization,
+which avoids whole-dataset preprocessing leakage.

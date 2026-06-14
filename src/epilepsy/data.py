@@ -5,13 +5,20 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator, Sequence, Union
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, Sampler, TensorDataset
 
 from epilepsy.config import DataConfig
+from epilepsy.chbmit import (
+    JNE_NON_SEIZURE_MINUTES,
+    RawEdfSample,
+    RawEdfSegmentReader,
+    index_patient_article_samples,
+    index_patient_continuous_samples,
+)
 
 
 def prepare_csv_dataset(config: DataConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -151,20 +158,25 @@ class ChannelPreprocessor:
         )
 
 
+Sample = Union[PoolSample, RawEdfSample]
+
+
 class ChbmitPoolDataset(Dataset):
-    """Lazy mmap-backed access to a preprocessed CHB-MIT NPY pool."""
+    """Access either legacy NPY pool samples or raw EDF-backed samples."""
 
     def __init__(
         self,
-        samples: Sequence[PoolSample],
+        samples: Sequence[Sample],
         indices: Sequence[int] | None = None,
         preprocessor: ChannelPreprocessor | None = None,
+        raw_reader: RawEdfSegmentReader | None = None,
     ) -> None:
         self.samples = samples
         self.indices = np.asarray(
             np.arange(len(samples)) if indices is None else indices, dtype=np.int64
         )
         self.preprocessor = preprocessor
+        self.raw_reader = raw_reader
         self._arrays: dict[Path, np.ndarray] = {}
 
     def __len__(self) -> int:
@@ -177,7 +189,13 @@ class ChbmitPoolDataset(Dataset):
 
     def raw_segment(self, dataset_index: int) -> np.ndarray:
         sample = self.samples[int(self.indices[dataset_index])]
-        return np.asarray(self._array(sample.array_path)[sample.array_index], dtype=np.float32)
+        if isinstance(sample, PoolSample):
+            return np.asarray(
+                self._array(sample.array_path)[sample.array_index], dtype=np.float32
+            )
+        if self.raw_reader is None:
+            raise RuntimeError("Raw EDF samples require a RawEdfSegmentReader")
+        return self.raw_reader.read(sample)
 
     def __getitem__(self, dataset_index: int) -> tuple[torch.Tensor, torch.Tensor]:
         sample = self.samples[int(self.indices[dataset_index])]
@@ -278,6 +296,105 @@ def load_pool_samples(config: DataConfig) -> list[PoolSample]:
     if not samples:
         raise RuntimeError(f"No NPY pool samples found in {root_dir}")
     return samples
+
+
+def build_raw_reader(config: DataConfig) -> RawEdfSegmentReader:
+    return RawEdfSegmentReader(
+        sample_rate=config.sample_rate,
+        low_hz=config.filter_low_hz,
+        high_hz=config.filter_high_hz,
+        filter_order=config.filter_order,
+        context_seconds=config.filter_context_seconds,
+        max_cache_segments=config.raw_cache_segments,
+    )
+
+
+def load_raw_samples(config: DataConfig) -> list[RawEdfSample]:
+    root_dir = Path(config.data_dir).expanduser()
+    if not root_dir.is_dir():
+        raise NotADirectoryError(f"Raw CHB-MIT directory does not exist: {root_dir}")
+    samples: list[RawEdfSample] = []
+    requested = set(config.test_patients)
+    patient_dirs = sorted(path for path in root_dir.glob("chb*") if path.is_dir())
+    if requested:
+        patient_dirs = [path for path in patient_dirs if path.name in requested]
+        missing = sorted(requested - {path.name for path in patient_dirs})
+        if missing:
+            raise ValueError(f"Configured patients not found under {root_dir}: {missing}")
+    for patient_dir in patient_dirs:
+        patient_digits = "".join(character for character in patient_dir.name if character.isdigit())
+        patient_seed = int(patient_digits) if patient_digits else 0
+        target_minutes = JNE_NON_SEIZURE_MINUTES.get(patient_dir.name)
+        samples.extend(
+            index_patient_article_samples(
+                patient_dir=patient_dir,
+                sample_rate=config.sample_rate,
+                segment_duration=config.segment_duration,
+                seizure_overlap=config.seizure_overlap,
+                ratio_min=config.non_seizure_ratio_min,
+                ratio_max=config.non_seizure_ratio_max,
+                random_state=config.sampling_seed + patient_seed,
+                target_non_seizure_seconds=(
+                    target_minutes * 60.0
+                    if config.use_jne_selected_durations and target_minutes is not None
+                    else None
+                ),
+            )
+        )
+    if not samples:
+        raise RuntimeError(f"No raw EDF samples were indexed under {root_dir}")
+    return samples
+
+
+def load_samples(config: DataConfig) -> list[Sample]:
+    source = config.source.lower()
+    if source == "raw_edf":
+        return load_raw_samples(config)
+    if source == "pool":
+        return load_pool_samples(config)
+    raise ValueError(f"Unsupported data source: {config.source}")
+
+
+def load_continuous_patient_samples(
+    config: DataConfig, patient: str
+) -> list[RawEdfSample]:
+    patient_dir = Path(config.data_dir).expanduser() / patient
+    if not patient_dir.is_dir():
+        raise NotADirectoryError(f"Patient directory does not exist: {patient_dir}")
+    return index_patient_continuous_samples(
+        patient_dir,
+        sample_rate=config.sample_rate,
+        segment_duration=config.segment_duration,
+    )
+
+
+def write_sample_manifest(samples: Sequence[Sample], path: str | Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "patient",
+        "label",
+        "record",
+        "start_s",
+        "end_s",
+        "event_id",
+        "source",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for sample in samples:
+            writer.writerow(
+                {
+                    "patient": sample.patient,
+                    "label": sample.label,
+                    "record": sample.record,
+                    "start_s": getattr(sample, "start_s", ""),
+                    "end_s": getattr(sample, "end_s", ""),
+                    "event_id": getattr(sample, "event_id", sample.record),
+                    "source": "raw_edf" if isinstance(sample, RawEdfSample) else "pool",
+                }
+            )
 
 
 def fit_channel_preprocessor(

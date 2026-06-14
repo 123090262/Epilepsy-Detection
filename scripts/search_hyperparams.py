@@ -64,7 +64,7 @@ def main() -> None:
     import yaml
 
     from epilepsy.config import load_config
-    from epilepsy.data import load_pool_samples
+    from epilepsy.data import build_raw_reader, load_samples
     from epilepsy.experiment import fit_fold
     from epilepsy.splits import grouped_kfold_splits
     from epilepsy.utils import append_csv_row, setup_logger
@@ -72,7 +72,12 @@ def main() -> None:
     if args.trials < 1 or args.inner_folds < 2 or args.epochs < 1:
         raise ValueError("trials >= 1, inner-folds >= 2, and epochs >= 1 are required")
     base_config = load_config(args.config)
-    samples = load_pool_samples(base_config.data)
+    samples = load_samples(base_config.data)
+    raw_reader = (
+        build_raw_reader(base_config.data)
+        if base_config.data.source.lower() == "raw_edf"
+        else None
+    )
     labels = np.asarray([sample.label for sample in samples], dtype=np.int64)
     patients = np.asarray([sample.patient for sample in samples])
     if args.test_patient not in np.unique(patients):
@@ -145,6 +150,7 @@ def main() -> None:
                 device,
                 seed=args.seed + trial * 100 + fold,
                 max_epochs=args.epochs,
+                raw_reader=raw_reader,
             )
             fold_metrics.append(result.best_metrics.as_dict())
             logger.info(
