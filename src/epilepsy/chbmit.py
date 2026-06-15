@@ -6,7 +6,7 @@ import re
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Tuple
 
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
@@ -180,7 +180,7 @@ def _normalize_channel(name: str) -> str:
     return {"01": "O1", "02": "O2"}.get(normalized, normalized)
 
 
-Montage = tuple[tuple[tuple[int, float], ...], ...]
+Montage = Tuple[Tuple[Tuple[int, float], ...], ...]
 
 
 def resolve_montage(channel_names: Iterable[str]) -> Montage:

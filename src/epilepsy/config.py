@@ -65,6 +65,7 @@ class ModelConfig:
     feature_dim: int
     hidden_dim: int
     num_classes: int
+    architecture: str = "epilepsy_gat"
     dropout: float = 0.35
     graph_dropout: float = 0.25
     spectral_fusion: bool = True

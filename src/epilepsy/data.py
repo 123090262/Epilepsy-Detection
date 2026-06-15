@@ -210,7 +210,7 @@ class ChbmitPoolDataset(Dataset):
 
 
 class EpochBalancedSampler(Sampler[int]):
-    """Yield every positive and a configurable random negative subset each epoch."""
+    """Sample both classes toward a configurable negative-to-positive ratio."""
 
     def __init__(
         self, labels: Sequence[int], seed: int, negative_ratio: float = 1.0
@@ -220,26 +220,35 @@ class EpochBalancedSampler(Sampler[int]):
         self.negative_indices = np.flatnonzero(labels == 0)
         if not len(self.positive_indices):
             raise ValueError("training split has no seizure samples")
-        if len(self.negative_indices) < len(self.positive_indices):
-            raise ValueError("training split has fewer non-seizure than seizure samples")
+        if not len(self.negative_indices):
+            raise ValueError("training split has no non-seizure samples")
         if negative_ratio <= 0:
             raise ValueError("negative_ratio must be positive")
         self.seed = seed
-        self.negative_count = min(
-            len(self.negative_indices),
-            max(1, int(round(len(self.positive_indices) * negative_ratio))),
-        )
+        desired_negatives = int(round(len(self.positive_indices) * negative_ratio))
+        if desired_negatives <= len(self.negative_indices):
+            self.positive_count = len(self.positive_indices)
+            self.negative_count = max(1, desired_negatives)
+        else:
+            self.negative_count = len(self.negative_indices)
+            self.positive_count = min(
+                len(self.positive_indices),
+                max(1, int(round(self.negative_count / negative_ratio))),
+            )
         self.epoch = 0
 
     def __len__(self) -> int:
-        return len(self.positive_indices) + self.negative_count
+        return self.positive_count + self.negative_count
 
     def __iter__(self) -> Iterator[int]:
         rng = np.random.default_rng(self.seed + self.epoch)
+        positives = rng.choice(
+            self.positive_indices, size=self.positive_count, replace=False
+        )
         negatives = rng.choice(
             self.negative_indices, size=self.negative_count, replace=False
         )
-        indices = np.concatenate((self.positive_indices, negatives))
+        indices = np.concatenate((positives, negatives))
         rng.shuffle(indices)
         self.epoch += 1
         return iter(indices.tolist())

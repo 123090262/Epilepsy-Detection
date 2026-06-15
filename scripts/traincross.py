@@ -47,7 +47,7 @@ def main() -> None:
     from epilepsy.experiment import fit_fold, make_eval_loader
     from epilepsy.plots import plot_confusion_matrix, plot_training_summary
     from epilepsy.splits import grouped_kfold_splits
-    from epilepsy.train import calculate_binary_metrics, evaluate
+    from epilepsy.train import calculate_binary_metrics_from_predictions, evaluate
     from epilepsy.utils import append_csv_row, make_run_dir, setup_logger
 
     if args.num_folds < 2:
@@ -75,8 +75,9 @@ def main() -> None:
         raise ValueError(f"Patients not found in indexed data: {missing}")
 
     logger.info(
-        "JNE patient-specific protocol: 1 s windows, %.1f s seizure overlap, "
+        "Patient-specific protocol: %.1f s windows, %.1f s seizure overlap, "
         "%.1f-%.1fx non-seizure duration, %d-fold CV",
+        config.data.segment_duration,
         config.data.seizure_overlap,
         config.data.non_seizure_ratio_min,
         config.data.non_seizure_ratio_max,
@@ -139,7 +140,7 @@ def main() -> None:
     logger.info("Using device: %s", device)
     all_fold_metrics: list[dict[str, float | int | str]] = []
     patient_metrics: dict[str, list[dict[str, float | int | str]]] = {}
-    patient_predictions: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+    patient_predictions: dict[str, list[tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
 
     for global_fold, (patient, fold, outer_train, test_indices) in enumerate(
         planned_splits, start=1
@@ -239,7 +240,7 @@ def main() -> None:
         }
         all_fold_metrics.append(row)
         patient_metrics.setdefault(patient, []).append(row)
-        patient_predictions.setdefault(patient, []).append((y_true, y_score))
+        patient_predictions.setdefault(patient, []).append((y_true, y_pred, y_score))
         logger.info(
             "RESULT %s acc=%.4f f1=%.4f sensitivity=%.4f precision=%.4f FPR/h=%.3f",
             fold_name,
@@ -254,25 +255,28 @@ def main() -> None:
         save_summary(run_dir / f"summary_{patient}.json", rows)
     pooled_by_patient = {}
     all_y_true = []
+    all_y_pred = []
     all_y_score = []
     for patient, predictions in patient_predictions.items():
         patient_y_true = np.concatenate([values[0] for values in predictions])
-        patient_y_score = np.concatenate([values[1] for values in predictions])
-        pooled_metrics, _ = calculate_binary_metrics(
+        patient_y_pred = np.concatenate([values[1] for values in predictions])
+        patient_y_score = np.concatenate([values[2] for values in predictions])
+        pooled_metrics = calculate_binary_metrics_from_predictions(
             patient_y_true,
+            patient_y_pred,
             patient_y_score,
             loss=0.0,
-            threshold=0.5,
             segment_duration=config.data.segment_duration,
         )
         pooled_by_patient[patient] = pooled_metrics.as_dict()
         all_y_true.append(patient_y_true)
+        all_y_pred.append(patient_y_pred)
         all_y_score.append(patient_y_score)
-    overall_metrics, _ = calculate_binary_metrics(
+    overall_metrics = calculate_binary_metrics_from_predictions(
         np.concatenate(all_y_true),
+        np.concatenate(all_y_pred),
         np.concatenate(all_y_score),
         loss=0.0,
-        threshold=0.5,
         segment_duration=config.data.segment_duration,
     )
     (run_dir / "pooled_metrics.json").write_text(

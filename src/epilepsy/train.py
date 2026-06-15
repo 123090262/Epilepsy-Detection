@@ -198,6 +198,41 @@ def calculate_binary_metrics(
     return metrics, y_pred
 
 
+def calculate_binary_metrics_from_predictions(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_score: np.ndarray,
+    loss: float,
+    segment_duration: float = 1.0,
+) -> Metrics:
+    """Calculate pooled metrics when each fold used its own validation threshold."""
+    auc = math.nan
+    pr_auc = math.nan
+    if len(np.unique(y_true)) == 2:
+        auc = float(roc_auc_score(y_true, y_score))
+        pr_auc = float(average_precision_score(y_true, y_score))
+
+    tn, fp, _, _ = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    negative_hours = float(np.sum(y_true == 0) * segment_duration / 3600.0)
+    accuracy = float(accuracy_score(y_true, y_pred))
+    balanced_accuracy = float(balanced_accuracy_score(y_true, y_pred))
+    f1 = float(f1_score(y_true, y_pred, zero_division=0))
+    return Metrics(
+        loss=float(loss),
+        accuracy=accuracy,
+        auc=auc,
+        pr_auc=pr_auc,
+        precision=float(precision_score(y_true, y_pred, zero_division=0)),
+        recall=float(recall_score(y_true, y_pred, zero_division=0)),
+        specificity=float(tn / max(tn + fp, 1)),
+        fpr_per_hour=float(fp / negative_hours) if negative_hours > 0 else math.nan,
+        balanced_accuracy=balanced_accuracy,
+        f1=f1,
+        composite=0.60 * f1 + 0.25 * balanced_accuracy + 0.15 * accuracy,
+        threshold=math.nan,
+    )
+
+
 def evaluate(
     model: nn.Module,
     device: torch.device,

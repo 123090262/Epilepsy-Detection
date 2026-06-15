@@ -20,7 +20,7 @@ from epilepsy.data import (
     build_raw_reader,
     fit_channel_preprocessor,
 )
-from epilepsy.models import EpilepsyGATNet
+from epilepsy.models import EpilepsyGATNet, LightSeizureNet
 from epilepsy.train import (
     Metrics,
     build_criterion,
@@ -45,7 +45,19 @@ class FoldTrainingResult:
     train_epoch_size: int
 
 
-def build_model(config, device: torch.device) -> EpilepsyGATNet:
+def build_model(config, device: torch.device) -> torch.nn.Module:
+    architecture = config.model.architecture.lower()
+    if architecture in {"light_seizure_net", "lightseizurenet", "light"}:
+        return LightSeizureNet(
+            num_channels=config.data.num_channels,
+            num_classes=config.model.num_classes,
+            hidden_dim=config.model.hidden_dim,
+            dropout=config.model.dropout,
+            sample_rate=config.data.sample_rate,
+        ).to(device)
+    if architecture not in {"epilepsy_gat", "gat"}:
+        raise ValueError(f"Unsupported model architecture: {config.model.architecture}")
+
     model_kwargs = {}
     if config.data.source.lower() == "raw_edf":
         if config.data.num_channels != len(TARGET_CHANNELS):
@@ -215,16 +227,18 @@ def fit_fold(
             epoch_callback(epoch, train_loss, val_metrics)
 
         score = getattr(val_metrics, train_config.checkpoint_metric)
-        improved = score > best_score or (
+        score_improved = score > best_score and not np.isclose(score, best_score)
+        checkpoint_improved = score_improved or (
             np.isclose(score, best_score) and val_metrics.loss < best_loss
         )
-        if improved:
+        if checkpoint_improved:
             best_score = score
             best_loss = val_metrics.loss
             best_epoch = epoch
             best_threshold = threshold
             best_metrics = val_metrics
             best_state = copy.deepcopy(model.state_dict())
+        if score_improved:
             stale_epochs = 0
         else:
             stale_epochs += 1

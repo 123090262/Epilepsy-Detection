@@ -8,9 +8,15 @@ import numpy as np
 import torch
 
 from epilepsy.data import EpochBalancedSampler
+from epilepsy.classical import extract_eeg_features
 from epilepsy.chbmit import TARGET_CHANNELS, resolve_montage
 from epilepsy.models.gat import DEFAULT_CHANNEL_NAMES, PriorMatrixBuilder, compute_plv_batch
-from epilepsy.train import calculate_binary_metrics, select_decision_threshold
+from epilepsy.models.light_seizure_net import LightSeizureNet
+from epilepsy.train import (
+    calculate_binary_metrics,
+    calculate_binary_metrics_from_predictions,
+    select_decision_threshold,
+)
 
 
 class ModelRegressionTests(unittest.TestCase):
@@ -39,6 +45,14 @@ class ModelRegressionTests(unittest.TestCase):
         self.assertEqual(len(selected), 40)
         self.assertEqual(int(np.sum(labels[selected] == 1)), 10)
         self.assertEqual(int(np.sum(labels[selected] == 0)), 30)
+
+    def test_balanced_sampler_handles_positive_majority(self) -> None:
+        labels = np.asarray([1] * 20 + [0] * 8)
+        sampler = EpochBalancedSampler(labels, seed=7, negative_ratio=1.0)
+        selected = np.asarray(list(iter(sampler)))
+        self.assertEqual(len(selected), 16)
+        self.assertEqual(int(np.sum(labels[selected] == 1)), 8)
+        self.assertEqual(int(np.sum(labels[selected] == 0)), 8)
 
     def test_common_chbmit_montage_has_18_channels(self) -> None:
         montage = resolve_montage(TARGET_CHANNELS)
@@ -75,6 +89,26 @@ class ModelRegressionTests(unittest.TestCase):
             loss=0.0,
         )
         self.assertEqual(threshold, 0.5)
+
+    def test_light_model_output_shape(self) -> None:
+        model = LightSeizureNet(num_channels=18, hidden_dim=64)
+        output = model(torch.randn(3, 18, 512))
+        self.assertEqual(output.shape, (3, 2))
+
+    def test_classical_feature_shape(self) -> None:
+        features = extract_eeg_features(np.random.randn(18, 256), sample_rate=256)
+        self.assertEqual(features.shape, (18 * 9,))
+        self.assertTrue(np.all(np.isfinite(features)))
+
+    def test_pooled_metrics_preserve_fold_specific_predictions(self) -> None:
+        metrics = calculate_binary_metrics_from_predictions(
+            np.asarray([0, 0, 1, 1]),
+            np.asarray([0, 1, 1, 1]),
+            np.asarray([0.1, 0.4, 0.6, 0.9]),
+            loss=0.0,
+        )
+        self.assertEqual(metrics.accuracy, 0.75)
+        self.assertTrue(np.isnan(metrics.threshold))
 
 
 if __name__ == "__main__":
