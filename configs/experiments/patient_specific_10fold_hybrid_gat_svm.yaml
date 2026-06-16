@@ -1,0 +1,84 @@
+# Patient-specific random-window 10-fold CV for the hybrid GAT model.
+# This protocol is intended to compare with the SVM-style high-accuracy baseline.
+data:
+  source: raw_edf
+  data_dir: CHBMIT
+  sample_rate: 256
+  segment_duration: 1.0
+  seizure_overlap: 0.5
+  non_seizure_ratio_min: 2.0
+  non_seizure_ratio_max: 3.0
+  num_channels: 18
+  filter_low_hz: 0.5
+  filter_high_hz: 50.0
+  filter_order: 4
+  filter_context_seconds: 4.0
+  raw_cache_segments: 65536
+  sampling_seed: 42
+  use_jne_selected_durations: true
+  test_patients:
+    - chb01
+    - chb02
+    - chb03
+    - chb04
+    - chb05
+    - chb06
+    - chb07
+    - chb08
+    - chb09
+    - chb10
+    - chb11
+    - chb12
+    - chb13
+    - chb14
+    - chb15
+    - chb16
+    - chb17
+    - chb18
+    - chb19
+    - chb20
+    - chb21
+    - chb22
+    - chb23
+    - chb24
+
+train:
+  batch_size: 128
+  num_epochs: 80
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  val_size: 0.1
+  random_state: 42
+  num_workers: 0
+  clip_lower_quantile: 0.001
+  clip_upper_quantile: 0.999
+  statistics_max_segments: 4096
+  optimizer: adamw
+  scheduler: cosine
+  loss: cross_entropy
+  focal_gamma: 2.0
+  focal_alpha: 0.65
+  sampling_strategy: all
+  negative_ratio: 3.0
+  max_grad_norm: 1.0
+  early_stopping_patience: 12
+  threshold_metric: accuracy
+  checkpoint_metric: accuracy
+  min_threshold: 0.05
+  max_threshold: 0.95
+
+model:
+  architecture: epilepsy_gat
+  feature_dim: 128
+  hidden_dim: 256
+  num_classes: 2
+  dropout: 0.25
+  graph_dropout: 0.15
+  spectral_fusion: true
+  classical_fusion: true
+  classical_hidden_dim: 256
+  auxiliary_weight: 0.15
+
+output:
+  run_dir: runs
+  checkpoint_dir: checkpoints

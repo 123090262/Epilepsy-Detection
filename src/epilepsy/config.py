@@ -69,6 +69,8 @@ class ModelConfig:
     dropout: float = 0.35
     graph_dropout: float = 0.25
     spectral_fusion: bool = True
+    classical_fusion: bool = False
+    classical_hidden_dim: int = 128
     auxiliary_weight: float = 0.25
 
 

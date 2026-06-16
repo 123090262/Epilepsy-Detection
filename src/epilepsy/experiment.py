@@ -74,6 +74,8 @@ def build_model(config, device: torch.device) -> torch.nn.Module:
         dropout=config.model.dropout,
         graph_dropout=config.model.graph_dropout,
         spectral_fusion=config.model.spectral_fusion,
+        classical_fusion=config.model.classical_fusion,
+        classical_hidden_dim=config.model.classical_hidden_dim,
         auxiliary_weight=config.model.auxiliary_weight,
         **model_kwargs,
     ).to(device)

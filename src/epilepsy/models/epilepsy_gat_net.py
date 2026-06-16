@@ -14,7 +14,11 @@ from epilepsy.models.gat import (
     TAGAT,
     compute_plv_batch,
 )
-from epilepsy.models.tcn import FeatureExtractor, SpectralFeatureExtractor
+from epilepsy.models.tcn import (
+    ClassicalFeatureExtractor,
+    FeatureExtractor,
+    SpectralFeatureExtractor,
+)
 
 
 class EpilepsyGATNet(nn.Module):
@@ -30,12 +34,15 @@ class EpilepsyGATNet(nn.Module):
         dropout: float = 0.35,
         graph_dropout: float = 0.25,
         spectral_fusion: bool = True,
+        classical_fusion: bool = False,
+        classical_hidden_dim: int = 128,
         auxiliary_weight: float = 0.25,
     ) -> None:
         super().__init__()
         self.C = len(channel_names)
         self.c_dim = 64
         self.spectral_fusion = spectral_fusion
+        self.classical_fusion = classical_fusion
         self.auxiliary_weight = auxiliary_weight
 
         self.prior_builder = PriorMatrixBuilder(channel_names)
@@ -46,6 +53,29 @@ class EpilepsyGATNet(nn.Module):
                 nn.Linear(2 * feature_dim, feature_dim), nn.Sigmoid()
             )
             self.feature_norm = nn.LayerNorm(feature_dim)
+        if classical_fusion:
+            self.classical_extractor = ClassicalFeatureExtractor(fs)
+            self.classical_project = nn.Sequential(
+                nn.LayerNorm(self.classical_extractor.num_features),
+                nn.Linear(self.classical_extractor.num_features, feature_dim),
+                nn.GELU(),
+            )
+            self.classical_feature_gate = nn.Sequential(
+                nn.Linear(2 * feature_dim, feature_dim), nn.Sigmoid()
+            )
+            self.classical_feature_norm = nn.LayerNorm(feature_dim)
+            self.classical_global = nn.Sequential(
+                nn.LayerNorm(self.C * self.classical_extractor.num_features),
+                nn.Linear(
+                    self.C * self.classical_extractor.num_features,
+                    classical_hidden_dim,
+                ),
+                nn.GELU(),
+                nn.Dropout(dropout / 2),
+                nn.Linear(classical_hidden_dim, hid_dim),
+                nn.GELU(),
+            )
+            self.classical_fuse = GatedFusion(hid_dim)
         self.tagat = TAGAT(
             feature_dim, hid_dim, c_dim=self.c_dim, dropout=graph_dropout
         )
@@ -93,6 +123,15 @@ class EpilepsyGATNet(nn.Module):
             spectral = self.spectral_extractor(x)
             gate = self.feature_gate(torch.cat((feat, spectral), dim=-1))
             feat = self.feature_norm(feat + gate * spectral)
+        if self.classical_fusion:
+            classical = self.classical_extractor(x)
+            classical_projected = self.classical_project(classical)
+            classical_gate = self.classical_feature_gate(
+                torch.cat((feat, classical_projected), dim=-1)
+            )
+            feat = self.classical_feature_norm(
+                feat + classical_gate * classical_projected
+            )
         t_out = self.norm_t(self.tagat(feat))
         s_out, auxiliary_logits = self.scgat(feat, a_prior)
         s_out = self.norm_s(s_out)
@@ -100,4 +139,7 @@ class EpilepsyGATNet(nn.Module):
         fused = self.gate_fuse(t_out.mean(1), s_out.mean(1))
         ch_gated = self.ch_gate(fused, s_out)
         fused = fused + ch_gated
+        if self.classical_fusion:
+            classical_global = self.classical_global(classical.flatten(1))
+            fused = self.classical_fuse(fused, classical_global)
         return self.classifier(fused) + self.auxiliary_weight * auxiliary_logits

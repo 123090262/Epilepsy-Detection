@@ -124,7 +124,7 @@ class SpectralFeatureExtractor(nn.Module):
     def __init__(self, fs: int = 256, feature_dim: int = 128) -> None:
         super().__init__()
         self.fs = fs
-        self.bands = ((0.5, 4.0), (4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 40.0))
+        self.bands = ((0.5, 4.0), (4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 50.0))
         self.project = nn.Sequential(
             nn.LayerNorm(len(self.bands)),
             nn.Linear(len(self.bands), feature_dim),
@@ -141,3 +141,35 @@ class SpectralFeatureExtractor(nn.Module):
             bandpower.append(power[..., mask].mean(dim=-1))
         features = torch.log1p(torch.stack(bandpower, dim=-1))
         return self.project(features)
+
+
+class ClassicalFeatureExtractor(nn.Module):
+    """SVM-style per-channel temporal statistics and log-bandpower features."""
+
+    def __init__(self, fs: int = 256) -> None:
+        super().__init__()
+        self.fs = fs
+        self.bands = ((0.5, 4.0), (4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 50.0))
+
+    @property
+    def num_features(self) -> int:
+        return 4 + len(self.bands)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError(f"Expected input shape (B, C, L), got {tuple(x.shape)}")
+
+        temporal = [
+            x.mean(dim=-1),
+            x.std(dim=-1, unbiased=False),
+            torch.sqrt(x.square().mean(dim=-1).clamp_min(1e-8)),
+            x.diff(dim=-1).abs().mean(dim=-1),
+        ]
+        spectrum = torch.fft.rfft(x, dim=-1)
+        power = spectrum.abs().square() / max(x.size(-1), 1)
+        freqs = torch.fft.rfftfreq(x.size(-1), d=1.0 / self.fs).to(x.device)
+        bandpower = []
+        for low, high in self.bands:
+            mask = (freqs >= low) & (freqs < high)
+            bandpower.append(torch.log1p(power[..., mask].mean(dim=-1)))
+        return torch.stack(temporal + bandpower, dim=-1)
