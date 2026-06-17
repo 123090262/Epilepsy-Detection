@@ -57,6 +57,18 @@ Run patient-specific ten-fold CV for all configured cases:
 python scripts/traincross.py --config configs/default.yaml --num-folds 10
 ```
 
+Run mixed-patient ten-fold CV for a capacity/generalization diagnostic. This
+pools all selected patients before splitting, producing 10 total folds rather
+than one ten-fold CV per patient:
+
+```bash
+python scripts/train_mixed_kfold.py --config configs/default.yaml --num-folds 10
+```
+
+Mixed-patient CV is not the same protocol as patient-specific CV: samples from
+the same patient may appear across train, validation, and test folds. Its
+checkpoints and summaries are labeled `mixed_patient_kfold`.
+
 The default random segment split is the paper-comparable setting. A stricter
 analysis keeps windows from one seizure event together:
 

@@ -42,37 +42,39 @@ data:
 
 train:
   batch_size: 32
-  num_epochs: 50
-  learning_rate: 0.005
-  weight_decay: 0.000001
+  num_epochs: 60
+  learning_rate: 0.0015
+  weight_decay: 0.0001
   val_size: 0.1
   random_state: 42
   num_workers: 0
   clip_lower_quantile: 0.001
   clip_upper_quantile: 0.999
   statistics_max_segments: 4096
-  optimizer: adam
-  scheduler: none
-  loss: cross_entropy
+  optimizer: adamw
+  scheduler: onecycle
+  loss: focal
   focal_gamma: 2.0
-  focal_alpha: 0.65
-  sampling_strategy: all
+  focal_alpha: 0.60
+  sampling_strategy: balanced
   negative_ratio: 3.0
   max_grad_norm: 1.0
-  early_stopping_patience: 5
-  threshold_metric: fixed
-  checkpoint_metric: f1
+  early_stopping_patience: 10
+  threshold_metric: composite
+  checkpoint_metric: composite
   min_threshold: 0.05
   max_threshold: 0.95
 
 model:
   feature_dim: 128
-  hidden_dim: 128
+  hidden_dim: 192
   num_classes: 2
-  dropout: 0.40
+  dropout: 0.35
   graph_dropout: 0.25
   spectral_fusion: true
-  auxiliary_weight: 0.25
+  classical_fusion: true
+  classical_hidden_dim: 128
+  auxiliary_weight: 0.20
 
 output:
   run_dir: runs

@@ -21,6 +21,23 @@ from epilepsy.models.tcn import (
 )
 
 
+class ChannelAttentionPool(nn.Module):
+    """Learn a per-sample weighted channel summary instead of plain averaging."""
+
+    def __init__(self, hid_dim: int) -> None:
+        super().__init__()
+        self.score = nn.Sequential(
+            nn.LayerNorm(hid_dim),
+            nn.Linear(hid_dim, max(hid_dim // 2, 1)),
+            nn.GELU(),
+            nn.Linear(max(hid_dim // 2, 1), 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weights = torch.softmax(self.score(x).squeeze(-1), dim=1)
+        return torch.sum(x * weights.unsqueeze(-1), dim=1)
+
+
 class EpilepsyGATNet(nn.Module):
     """TCN + dual graph attention network for EEG epilepsy classification."""
 
@@ -89,13 +106,18 @@ class EpilepsyGATNet(nn.Module):
 
         self.norm_t = nn.LayerNorm(hid_dim)
         self.norm_s = nn.LayerNorm(hid_dim)
+        self.pool_t = ChannelAttentionPool(hid_dim)
+        self.pool_s = ChannelAttentionPool(hid_dim)
         self.gate_fuse = GatedFusion(hid_dim)
         self.ch_gate = ChannelGating(self.C, hid_dim)
+        self.fused_norm = nn.LayerNorm(hid_dim)
 
         self.classifier = nn.Sequential(
+            nn.LayerNorm(hid_dim),
             nn.Dropout(dropout),
             nn.Linear(hid_dim, hid_dim // 2),
             nn.GELU(),
+            nn.LayerNorm(hid_dim // 2),
             nn.Dropout(dropout / 2),
             nn.Linear(hid_dim // 2, num_classes),
         )
@@ -136,10 +158,10 @@ class EpilepsyGATNet(nn.Module):
         s_out, auxiliary_logits = self.scgat(feat, a_prior)
         s_out = self.norm_s(s_out)
 
-        fused = self.gate_fuse(t_out.mean(1), s_out.mean(1))
+        fused = self.gate_fuse(self.pool_t(t_out), self.pool_s(s_out))
         ch_gated = self.ch_gate(fused, s_out)
-        fused = fused + ch_gated
+        fused = self.fused_norm(fused + ch_gated)
         if self.classical_fusion:
             classical_global = self.classical_global(classical.flatten(1))
-            fused = self.classical_fuse(fused, classical_global)
+            fused = self.fused_norm(self.classical_fuse(fused, classical_global))
         return self.classifier(fused) + self.auxiliary_weight * auxiliary_logits

@@ -11,6 +11,7 @@ from epilepsy.data import EpochBalancedSampler
 from epilepsy.classical import extract_eeg_features
 from epilepsy.chbmit import TARGET_CHANNELS, resolve_montage
 from epilepsy.models.gat import DEFAULT_CHANNEL_NAMES, PriorMatrixBuilder, compute_plv_batch
+from epilepsy.models.epilepsy_gat_net import EpilepsyGATNet
 from epilepsy.models.light_seizure_net import LightSeizureNet
 from epilepsy.train import (
     calculate_binary_metrics,
@@ -94,6 +95,17 @@ class ModelRegressionTests(unittest.TestCase):
         model = LightSeizureNet(num_channels=18, hidden_dim=64)
         output = model(torch.randn(3, 18, 512))
         self.assertEqual(output.shape, (3, 2))
+
+    def test_gat_model_output_shape_with_classical_fusion(self) -> None:
+        model = EpilepsyGATNet(
+            channel_names=DEFAULT_CHANNEL_NAMES[:18],
+            hid_dim=64,
+            feature_dim=32,
+            classical_fusion=True,
+            classical_hidden_dim=32,
+        )
+        output = model(torch.randn(2, 18, 256))
+        self.assertEqual(output.shape, (2, 2))
 
     def test_classical_feature_shape(self) -> None:
         features = extract_eeg_features(np.random.randn(18, 256), sample_rate=256)
