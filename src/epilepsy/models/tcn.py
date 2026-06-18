@@ -102,15 +102,89 @@ class EnhancedResTCN(nn.Module):
         return self.fc(self.pool(x))
 
 
+class LightweightTemporalEncoder(nn.Module):
+    """Small dilated depthwise CNN for per-channel EEG feature extraction."""
+
+    def __init__(
+        self,
+        fs: int = 256,
+        feature_dim: int = 128,
+        width: int = 32,
+        dropout: float = 0.15,
+    ) -> None:
+        super().__init__()
+        width = max(16, width)
+        kernel = max(7, int(0.06 * fs) | 1)
+        self.stem = nn.Sequential(
+            nn.Conv1d(1, width, kernel_size=kernel, padding=kernel // 2, bias=False),
+            nn.BatchNorm1d(width),
+            nn.GELU(),
+            nn.MaxPool1d(kernel_size=2),
+        )
+        self.blocks = nn.Sequential(
+            SeparableTemporalBlock(width, dilation=1, dropout=dropout),
+            SeparableTemporalBlock(width, dilation=2, dropout=dropout),
+            SeparableTemporalBlock(width, dilation=4, dropout=dropout),
+        )
+        self.project = nn.Sequential(
+            AvgMaxPool1d(),
+            nn.Flatten(),
+            nn.Linear(2 * width, feature_dim),
+            nn.GELU(),
+            nn.LayerNorm(feature_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.project(self.blocks(self.stem(x)))
+
+
+class SeparableTemporalBlock(nn.Module):
+    """Residual depthwise-separable temporal block."""
+
+    def __init__(self, channels: int, dilation: int, dropout: float) -> None:
+        super().__init__()
+        padding = 3 * dilation
+        self.block = nn.Sequential(
+            nn.Conv1d(
+                channels,
+                channels,
+                kernel_size=7,
+                padding=padding,
+                dilation=dilation,
+                groups=channels,
+                bias=False,
+            ),
+            nn.BatchNorm1d(channels),
+            nn.GELU(),
+            nn.Conv1d(channels, channels, kernel_size=1, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.Dropout(dropout),
+        )
+        self.activation = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.activation(x + self.block(x))
+
+
 class FeatureExtractor(nn.Module):
     """Extract a TCN feature vector independently for each EEG channel."""
 
     def __init__(
-        self, num_channels: int, fs: int = 256, feature_dim: int = 128
+        self,
+        num_channels: int,
+        fs: int = 256,
+        feature_dim: int = 128,
+        backbone: str = "lightweight",
     ) -> None:
         super().__init__()
         self.num_channels = num_channels
-        self.tcn = EnhancedResTCN(fs=fs, feature_dim=feature_dim)
+        backbone = backbone.lower()
+        if backbone in {"lightweight", "light", "depthwise"}:
+            self.tcn = LightweightTemporalEncoder(fs=fs, feature_dim=feature_dim)
+        elif backbone in {"enhanced_tcn", "tcn", "res_tcn"}:
+            self.tcn = EnhancedResTCN(fs=fs, feature_dim=feature_dim)
+        else:
+            raise ValueError(f"Unsupported temporal backbone: {backbone}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, channels, length = x.shape

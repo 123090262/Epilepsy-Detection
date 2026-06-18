@@ -50,6 +50,8 @@ class EpilepsyGATNet(nn.Module):
         hid_dim: int = 256,
         dropout: float = 0.35,
         graph_dropout: float = 0.25,
+        graph_heads: int = 4,
+        temporal_backbone: str = "lightweight",
         spectral_fusion: bool = True,
         classical_fusion: bool = False,
         classical_hidden_dim: int = 128,
@@ -63,7 +65,9 @@ class EpilepsyGATNet(nn.Module):
         self.auxiliary_weight = auxiliary_weight
 
         self.prior_builder = PriorMatrixBuilder(channel_names)
-        self.feat_extractor = FeatureExtractor(self.C, fs, feature_dim)
+        self.feat_extractor = FeatureExtractor(
+            self.C, fs, feature_dim, backbone=temporal_backbone
+        )
         if spectral_fusion:
             self.spectral_extractor = SpectralFeatureExtractor(fs, feature_dim)
             self.feature_gate = nn.Sequential(
@@ -94,7 +98,11 @@ class EpilepsyGATNet(nn.Module):
             )
             self.classical_fuse = GatedFusion(hid_dim)
         self.tagat = TAGAT(
-            feature_dim, hid_dim, c_dim=self.c_dim, dropout=graph_dropout
+            feature_dim,
+            hid_dim,
+            c_dim=self.c_dim,
+            dropout=graph_dropout,
+            num_heads=graph_heads,
         )
         self.scgat = SCGAT(
             feature_dim,
@@ -102,6 +110,7 @@ class EpilepsyGATNet(nn.Module):
             num_classes,
             c_dim=self.c_dim,
             dropout=graph_dropout,
+            num_heads=graph_heads,
         )
 
         self.norm_t = nn.LayerNorm(hid_dim)

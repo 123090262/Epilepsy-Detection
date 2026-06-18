@@ -57,6 +57,13 @@ Run patient-specific ten-fold CV for all configured cases:
 python scripts/traincross.py --config configs/default.yaml --num-folds 10
 ```
 
+Run the lightweight SVM baseline with patient-specific ten-fold CV for all 24
+configured patients:
+
+```bash
+python scripts/traincross_svm.py --config configs/default.yaml --num-folds 10
+```
+
 Run mixed-patient ten-fold CV for a capacity/generalization diagnostic. This
 pools all selected patients before splitting, producing 10 total folds rather
 than one ten-fold CV per patient:

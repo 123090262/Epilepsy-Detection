@@ -68,6 +68,8 @@ class ModelConfig:
     architecture: str = "epilepsy_gat"
     dropout: float = 0.35
     graph_dropout: float = 0.25
+    graph_heads: int = 4
+    temporal_backbone: str = "lightweight"
     spectral_fusion: bool = True
     classical_fusion: bool = False
     classical_hidden_dim: int = 128

@@ -172,25 +172,119 @@ class GraphAttentionLayer(nn.Module):
         return F.elu(torch.bmm(alpha, wh))
 
 
+class QKVGraphAttentionBlock(nn.Module):
+    """Multi-head QKV attention with optional graph-prior bias."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        num_heads: int = 4,
+        c_dim: int = 64,
+        dropout: float = 0.2,
+        prior_lambda: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if out_dim % num_heads != 0:
+            raise ValueError("out_dim must be divisible by num_heads")
+        self.num_heads = num_heads
+        self.head_dim = out_dim // num_heads
+        self.scale = self.head_dim**-0.5
+        self.prior_lambda = prior_lambda
+
+        self.q = nn.Linear(in_dim, out_dim, bias=False)
+        self.k = nn.Linear(in_dim, out_dim, bias=False)
+        self.v = nn.Linear(in_dim, out_dim, bias=False)
+        self.out = nn.Linear(out_dim, out_dim, bias=False)
+        self.residual = nn.Identity() if in_dim == out_dim else nn.Linear(in_dim, out_dim)
+        self.context_gate = nn.Sequential(nn.Linear(c_dim, out_dim), nn.Sigmoid())
+        self.attn_drop = nn.Dropout(dropout)
+        self.out_drop = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(out_dim)
+        self.norm2 = nn.LayerNorm(out_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(out_dim, 2 * out_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(2 * out_dim, out_dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        adj: torch.Tensor | None = None,
+        c: torch.Tensor | None = None,
+        prior_adj: torch.Tensor | None = None,
+        eps: float = 1e-8,
+    ) -> torch.Tensor:
+        batch_size, nodes, _ = x.shape
+
+        q = self.q(x).view(batch_size, nodes, self.num_heads, self.head_dim)
+        k = self.k(x).view(batch_size, nodes, self.num_heads, self.head_dim)
+        v = self.v(x).view(batch_size, nodes, self.num_heads, self.head_dim)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        logits = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        if prior_adj is not None and self.prior_lambda > 0:
+            if prior_adj.dim() == 2:
+                prior_adj = prior_adj.unsqueeze(0).expand(batch_size, -1, -1)
+            logits = logits + self.prior_lambda * torch.log(
+                prior_adj.clamp(min=eps)
+            ).unsqueeze(1)
+        if adj is not None:
+            if adj.dim() == 2:
+                adj = adj.unsqueeze(0).expand(batch_size, -1, -1)
+            logits = logits.masked_fill(adj.unsqueeze(1) == 0, -1e9)
+
+        alpha = self.attn_drop(F.softmax(logits, dim=-1))
+        out = torch.matmul(alpha, v).transpose(1, 2).reshape(batch_size, nodes, -1)
+        out = self.out_drop(self.out(out))
+        if c is not None:
+            out = out * self.context_gate(c).unsqueeze(1)
+
+        out = self.norm1(self.residual(x) + out)
+        return self.norm2(out + self.ffn(out))
+
+
 class TAGAT(nn.Module):
     """Single-segment temporal-aware graph attention branch."""
 
     def __init__(
-        self, feature_dim: int, hid_dim: int, c_dim: int = 64, dropout: float = 0.3
+        self,
+        feature_dim: int,
+        hid_dim: int,
+        c_dim: int = 64,
+        dropout: float = 0.3,
+        num_heads: int = 4,
     ) -> None:
         super().__init__()
         self.c_proj = nn.Sequential(nn.Linear(feature_dim, c_dim), nn.ReLU(inplace=True))
-        self.gat1 = GraphAttentionLayer(feature_dim, hid_dim, c_dim=c_dim, dropout=dropout)
-        self.gat2 = GraphAttentionLayer(hid_dim, hid_dim, c_dim=c_dim, dropout=dropout)
-        self.norm1 = nn.LayerNorm(hid_dim)
-        self.norm2 = nn.LayerNorm(hid_dim)
+        self.gat1 = QKVGraphAttentionBlock(
+            feature_dim,
+            hid_dim,
+            num_heads=num_heads,
+            c_dim=c_dim,
+            dropout=dropout,
+            prior_lambda=0.0,
+        )
+        self.gat2 = QKVGraphAttentionBlock(
+            hid_dim,
+            hid_dim,
+            num_heads=num_heads,
+            c_dim=c_dim,
+            dropout=dropout,
+            prior_lambda=0.0,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         c = self.c_proj(x.mean(dim=1))
         nodes = x.size(1)
         adj = torch.ones(nodes, nodes, device=x.device)
-        x = self.norm1(self.gat1(x, adj=adj, c=c))
-        return self.norm2(x + self.gat2(x, adj=adj, c=c))
+        x = self.gat1(x, adj=adj, c=c)
+        return self.gat2(x, adj=adj, c=c)
 
 
 class SCGAT(nn.Module):
@@ -203,12 +297,25 @@ class SCGAT(nn.Module):
         num_classes: int = 2,
         c_dim: int = 64,
         dropout: float = 0.3,
+        num_heads: int = 4,
     ) -> None:
         super().__init__()
-        self.gat1 = GraphAttentionLayer(feature_dim, hid_dim, c_dim=c_dim, dropout=dropout)
-        self.gat2 = GraphAttentionLayer(hid_dim, hid_dim, c_dim=c_dim, dropout=dropout)
-        self.norm1 = nn.LayerNorm(hid_dim)
-        self.norm2 = nn.LayerNorm(hid_dim)
+        self.gat1 = QKVGraphAttentionBlock(
+            feature_dim,
+            hid_dim,
+            num_heads=num_heads,
+            c_dim=c_dim,
+            dropout=dropout,
+            prior_lambda=1.0,
+        )
+        self.gat2 = QKVGraphAttentionBlock(
+            hid_dim,
+            hid_dim,
+            num_heads=num_heads,
+            c_dim=c_dim,
+            dropout=dropout,
+            prior_lambda=1.0,
+        )
         self.aux_fc = nn.Linear(hid_dim, num_classes)
         self.cond_mlp = nn.Sequential(
             nn.Linear(feature_dim, 128),
@@ -224,12 +331,8 @@ class SCGAT(nn.Module):
         if adj_prior.dim() == 2:
             adj_prior = adj_prior.unsqueeze(0).expand(batch_size, -1, -1)
 
-        x = self.norm1(
-            self.gat1(x, adj=adj_full, c=c, prior_adj=adj_prior, prior_lambda=1.0)
-        )
-        x = self.norm2(
-            x + self.gat2(x, adj=adj_full, c=c, prior_adj=adj_prior, prior_lambda=1.0)
-        )
+        x = self.gat1(x, adj=adj_full, c=c, prior_adj=adj_prior)
+        x = self.gat2(x, adj=adj_full, c=c, prior_adj=adj_prior)
         aux_logits = self.aux_fc(x.mean(dim=1))
         return x, aux_logits
 

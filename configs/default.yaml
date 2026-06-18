@@ -41,9 +41,9 @@ data:
     - chb24
 
 train:
-  batch_size: 32
-  num_epochs: 60
-  learning_rate: 0.0015
+  batch_size: 64
+  num_epochs: 40
+  learning_rate: 0.002
   weight_decay: 0.0001
   val_size: 0.1
   random_state: 42
@@ -59,22 +59,24 @@ train:
   sampling_strategy: balanced
   negative_ratio: 3.0
   max_grad_norm: 1.0
-  early_stopping_patience: 10
+  early_stopping_patience: 7
   threshold_metric: composite
   checkpoint_metric: composite
   min_threshold: 0.05
   max_threshold: 0.95
 
 model:
-  feature_dim: 128
-  hidden_dim: 192
+  feature_dim: 96
+  hidden_dim: 128
   num_classes: 2
-  dropout: 0.35
-  graph_dropout: 0.25
+  dropout: 0.30
+  graph_dropout: 0.15
+  graph_heads: 4
+  temporal_backbone: lightweight
   spectral_fusion: true
   classical_fusion: true
   classical_hidden_dim: 128
-  auxiliary_weight: 0.20
+  auxiliary_weight: 0.15
 
 output:
   run_dir: runs

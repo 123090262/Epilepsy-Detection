@@ -73,6 +73,8 @@ def build_model(config, device: torch.device) -> torch.nn.Module:
         hid_dim=config.model.hidden_dim,
         dropout=config.model.dropout,
         graph_dropout=config.model.graph_dropout,
+        graph_heads=config.model.graph_heads,
+        temporal_backbone=config.model.temporal_backbone,
         spectral_fusion=config.model.spectral_fusion,
         classical_fusion=config.model.classical_fusion,
         classical_hidden_dim=config.model.classical_hidden_dim,
